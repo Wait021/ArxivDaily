@@ -8,10 +8,16 @@ import net
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV_NS = "{http://arxiv.org/schemas/atom}"
-ARXIV_API = "http://export.arxiv.org/api/query"
+ARXIV_API = "https://export.arxiv.org/api/query"
+# arXiv API 要求自动化客户端用可表明身份的 UA（带联系方式），
+# 从数据中心 IP（如 GitHub Actions）用伪装浏览器的 UA 会被拒（HTTP 406）
+USER_AGENTS = [
+    "ArxivDaily-Agent/1.0 (https://github.com/Wait021/ArxivDaily; mailto:errant-kimono48@icloud.com)",
+    "Mozilla/5.0 (compatible; ArxivDailyBot/1.0; +https://github.com/Wait021/ArxivDaily)",
+]
 
 
-def _fetch(keyword: str, max_results: int) -> str:
+def _fetch(keyword: str, max_results: int, ua: str) -> str:
     # 单个词：要求同时出现在标题和摘要；多个词：作为短语出现在标题或摘要
     link = "AND" if len(keyword.split()) == 1 else "OR"
     query = f'ti:"{keyword}" {link} abs:"{keyword}"'
@@ -23,14 +29,14 @@ def _fetch(keyword: str, max_results: int) -> str:
     }
     # arXiv 直连更稳（代理可能破坏证书链）
     url = ARXIV_API + "?" + urllib.parse.urlencode(params)
-    return net.get(url, timeout=60, direct=True).decode("utf-8")
+    return net.get(url, timeout=60, direct=True, headers={"User-Agent": ua}).decode("utf-8")
 
 
-def fetch_papers(keyword: str, max_results: int, retries: int = 5):
+def fetch_papers(keyword: str, max_results: int, retries: int = 6):
     """返回论文列表 [{arxiv_id,title,abstract,link,date,comment}]，全部失败返回 None。"""
-    for _ in range(retries):
+    for i in range(retries):
         try:
-            root = ET.fromstring(_fetch(keyword, max_results))
+            root = ET.fromstring(_fetch(keyword, max_results, USER_AGENTS[i % len(USER_AGENTS)]))
             papers = []
             for entry in root.findall(f"{ATOM}entry"):
                 def txt(tag, ns=ATOM, default=""):

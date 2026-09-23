@@ -15,8 +15,11 @@ _direct_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 _default_opener = urllib.request.build_opener()
 
 
-def get(url: str, timeout: int = 60, direct: bool = False) -> bytes:
-    """GET 请求。direct=True 强制不走任何代理。"""
+def get(url: str, timeout: int = 60, direct: bool = False, headers: dict = None) -> bytes:
+    """GET 请求。direct=True 强制不走任何代理；headers 可覆盖默认 UA。"""
     opener = _direct_opener if direct else _default_opener
-    req = urllib.request.Request(url, headers=HEADERS)
+    h = dict(HEADERS)
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, headers=h)
     return opener.open(req, timeout=timeout).read()
