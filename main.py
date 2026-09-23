@@ -1,0 +1,124 @@
+# -*- coding: utf-8 -*-
+"""入口：抓论文 → AI 全文总结 → 生成 README.md 和每日 Issue。
+
+用法：
+  python main.py          # 完整运行（GitHub Actions 每天自动跑，也可本地手动跑）
+  TEST_MODE=1 python main.py  # 快速冒烟测试（少量抓取，不调 LLM）
+"""
+import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import config
+import summarizer
+from arxiv_fetch import fetch_papers
+from trending import fetch_weekly_trending
+
+TEST_MODE = os.environ.get("TEST_MODE") == "1"
+
+ISSUE_DIR = ".github"
+ISSUE_BODY_FILE = os.path.join(ISSUE_DIR, "daily_issue.md")
+ISSUE_TITLE_FILE = os.path.join(ISSUE_DIR, "issue_title.txt")
+
+
+def esc(text: str) -> str:
+    """转义 Markdown 表格单元格里的竖线和换行。"""
+    return text.replace("|", "\\|").replace("\n", "<br>").strip()
+
+
+def ai_cell(paper: dict) -> str:
+    """表格第三列：优先 AI 总结，其次折叠的原始摘要。"""
+    if paper.get("ai_summary"):
+        return "<br>".join(paper["ai_summary"].splitlines())
+    abstract = esc(paper.get("abstract", ""))[:800]
+    return f"<details><summary>📄 摘要</summary><p>{abstract}</p></details>" if abstract else ""
+
+
+def paper_row(paper: dict, with_votes: bool = False) -> str:
+    votes = f" | **{paper['upvotes']}** 👍" if with_votes else ""
+    comment = ""
+    if paper.get("comment"):
+        comment = f" <details><summary>💬</summary><p>{esc(paper['comment'])[:300]}</p></details>"
+    return (
+        f"| **[{esc(paper['title'])}]({paper['link']})**{comment} "
+        f"| {paper.get('date', '')}{votes} | {ai_cell(paper)} |"
+    )
+
+
+def write_section(rm: list, issue: list, title: str, papers: list, issue_top: int, with_votes=False):
+    rm.append(f"\n## {title}\n")
+    if with_votes:
+        rm.append("| **标题** | **日期** | **热度** | **🤖 AI 总结** |")
+        rm.append("| --- | --- | --- | --- |")
+    else:
+        rm.append("| **标题** | **日期** | **🤖 AI 总结** |")
+        rm.append("| --- | --- | --- |")
+    issue.append(f"\n## {title}\n")
+    issue.append("| **标题** | **日期** | **🤖 AI 总结** |")
+    issue.append("| --- | --- | --- |")
+    for p in papers:
+        rm.append(paper_row(p, with_votes))
+    for p in papers[:issue_top]:
+        issue.append(paper_row(p, False))
+
+
+def main():
+    beijing = ZoneInfo("Asia/Shanghai")
+    today = datetime.now(beijing).strftime("%Y-%m-%d")
+    print(f"=== 论文日报 {today} ===")
+
+    rm = [f"# 📚 论文日报 · 翻译智能体 & Agent\n\n{config.README_INTRO}\n\nLast update: {today}"]
+    issue = []
+
+    # ---- 本周热门（Hugging Face Trending）----
+    days = 2 if TEST_MODE else config.TRENDING_DAYS
+    top_n = 5 if TEST_MODE else config.TRENDING_TOP_N
+    print(f"[1/3] 抓取 Hugging Face 最近 {days} 天热门论文 ...")
+    trending = fetch_weekly_trending(days=days, top_n=top_n)
+    n_sum = 2 if TEST_MODE else config.SUMMARIZE_TRENDING
+    for i, p in enumerate(trending[:n_sum]):
+        print(f"  AI 总结 {i + 1}/{n_sum}: {p['title'][:50]}")
+        p["ai_summary"] = summarizer.summarize_paper(p) if not TEST_MODE else ""
+    if trending:
+        write_section(rm, issue, f"🔥 本周热门 · Hugging Face Trending", trending, top_n, with_votes=True)
+
+    # ---- 关键词论文 ----
+    keywords = config.KEYWORDS[:2] if TEST_MODE else config.KEYWORDS
+    per_kw = 5 if TEST_MODE else config.MAX_RESULTS_PER_KEYWORD
+    keep = 5 if TEST_MODE else config.KEEP_PER_KEYWORD
+    n_sum = 1 if TEST_MODE else config.SUMMARIZE_PER_KEYWORD
+    seen = {p["arxiv_id"] for p in trending}  # 跨关键词去重
+
+    print(f"[2/3] 抓取 arXiv 关键词论文（{len(keywords)} 个关键词）...")
+    ok_keywords = 0
+    for kw in keywords:
+        print(f"  关键词: {kw}")
+        papers = fetch_papers(kw, per_kw)
+        if papers is None:
+            print("    抓取失败，跳过该关键词")
+            continue
+        papers = [p for p in papers if p["arxiv_id"] not in seen][:keep]
+        seen.update(p["arxiv_id"] for p in papers)
+        for i, p in enumerate(papers[:n_sum]):
+            print(f"  AI 总结 {i + 1}/{n_sum}: {p['title'][:50]}")
+            p["ai_summary"] = summarizer.summarize_paper(p) if not TEST_MODE else ""
+        write_section(rm, issue, kw, papers, config.ISSUE_RESULTS_PER_KEYWORD if not TEST_MODE else keep)
+        ok_keywords += 1
+
+    if ok_keywords == 0 and not trending:
+        raise SystemExit("所有数据源都失败了，不生成文件")
+
+    # ---- 写文件 ----
+    print("[3/3] 生成 README.md 和每日 Issue ...")
+    with open("README.md", "w", encoding="utf-8") as f:
+        f.write("\n".join(rm) + "\n")
+    os.makedirs(ISSUE_DIR, exist_ok=True)
+    with open(ISSUE_BODY_FILE, "w", encoding="utf-8") as f:
+        f.write(f"📚 论文日报 {today} · 关键词：{('、'.join(keywords))}\n" + "\n".join(issue) + "\n")
+    with open(ISSUE_TITLE_FILE, "w", encoding="utf-8") as f:
+        f.write(f"📚 论文日报 - {today}")
+    print("完成：README.md 已更新，Issue 内容已生成")
+
+
+if __name__ == "__main__":
+    main()
