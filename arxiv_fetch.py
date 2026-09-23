@@ -2,22 +2,20 @@
 """从 arXiv 官方 API 按关键词抓论文（标题/摘要/链接/更新日期/作者评论）。"""
 import time
 import urllib.parse
+import urllib.request
 import xml.etree.ElementTree as ET
 
-import net
+# 经验教训（2026-09-23 排查）：arXiv API 会拉黑自定义 bot UA（持续 406），
+# 用 Python 默认 UA（Python-urllib/x.x，与海量正常脚本一致）最稳定——
+# 参考 yanghlll/ArxivDaily-Haolin 多月稳定运行的用法。
+# 同时必须保持请求间隔 ≥3 秒 + 失败退避重试，避免触发限流。
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV_NS = "{http://arxiv.org/schemas/atom}"
 ARXIV_API = "https://export.arxiv.org/api/query"
-# arXiv API 要求自动化客户端用可表明身份的 UA（带联系方式），
-# 从数据中心 IP（如 GitHub Actions）用伪装浏览器的 UA 会被拒（HTTP 406）
-USER_AGENTS = [
-    "ArxivDaily-Agent/1.0 (https://github.com/Wait021/ArxivDaily; mailto:errant-kimono48@icloud.com)",
-    "Mozilla/5.0 (compatible; ArxivDailyBot/1.0; +https://github.com/Wait021/ArxivDaily)",
-]
 
 
-def _fetch(keyword: str, max_results: int, ua: str) -> str:
+def _fetch(keyword: str, max_results: int) -> str:
     # 单个词：要求同时出现在标题和摘要；多个词：作为短语出现在标题或摘要
     link = "AND" if len(keyword.split()) == 1 else "OR"
     query = f'ti:"{keyword}" {link} abs:"{keyword}"'
@@ -27,21 +25,21 @@ def _fetch(keyword: str, max_results: int, ua: str) -> str:
         "sortBy": "lastUpdatedDate",
         "sortOrder": "descending",
     }
-    # arXiv 直连更稳（代理可能破坏证书链）
     url = ARXIV_API + "?" + urllib.parse.urlencode(params)
-    return net.get(url, timeout=60, direct=True, headers={"User-Agent": ua}).decode("utf-8")
+    # 不带任何自定义头，让 urllib 用默认 UA 直连
+    return urllib.request.urlopen(url, timeout=60).read().decode("utf-8")
 
 
 def fetch_papers(keyword: str, max_results: int, retries: int = 7):
     """返回论文列表 [{arxiv_id,title,abstract,link,date,comment}]，全部失败返回 None。
 
-    arXiv API 会间歇性返回 406（限流/后端抽风），同一样查询重试往往就通了，
-    所以用指数退避：5s → 10s → 20s → 30s → 45s → 60s → 60s
+    arXiv API 偶发 406/空结果（限流/后端抖动），重试往往就通，
+    用指数退避：5s → 10s → 20s → 30s → 45s → 60s → 60s
     """
     backoffs = [5, 10, 20, 30, 45, 60, 60]
     for i in range(retries):
         try:
-            root = ET.fromstring(_fetch(keyword, max_results, USER_AGENTS[i % len(USER_AGENTS)]))
+            root = ET.fromstring(_fetch(keyword, max_results))
             papers = []
             for entry in root.findall(f"{ATOM}entry"):
                 def txt(tag, ns=ATOM, default=""):

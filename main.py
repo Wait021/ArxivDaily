@@ -5,6 +5,7 @@
   python main.py          # 完整运行（GitHub Actions 每天自动跑，也可本地手动跑）
   TEST_MODE=1 python main.py  # 快速冒烟测试（少量抓取，不调 LLM）
 """
+import json
 import os
 import time
 from datetime import datetime
@@ -40,8 +41,9 @@ def paper_row(paper: dict, with_votes: bool = False) -> str:
     comment = ""
     if paper.get("comment"):
         comment = f" <details><summary>💬</summary><p>{esc(paper['comment'])[:300]}</p></details>"
+    pdf = f"https://arxiv.org/pdf/{paper['arxiv_id']}"
     return (
-        f"| **[{esc(paper['title'])}]({paper['link']})**{comment} "
+        f"| **[{esc(paper['title'])}]({paper['link']})** [📄]({pdf}){comment} "
         f"| {paper.get('date', '')}{votes} | {ai_cell(paper)} |"
     )
 
@@ -114,24 +116,34 @@ def main():
             time.sleep(4)
 
     ok_keywords = 0
+    export = {"date": today, "trending": [], "keywords": {}}
+    if trending:
+        for p in trending:
+            p["pdf"] = f"https://arxiv.org/pdf/{p['arxiv_id']}"
+        export["trending"] = trending
     for kw in keywords:
         if kw not in kw_papers:
             continue
         papers = [p for p in kw_papers[kw] if p["arxiv_id"] not in seen][:keep]
         seen.update(p["arxiv_id"] for p in papers)
+        for p in papers:
+            p["pdf"] = f"https://arxiv.org/pdf/{p['arxiv_id']}"
         for i, p in enumerate(papers[:n_sum]):
             print(f"  AI 总结 {i + 1}/{n_sum}: {p['title'][:50]}")
             p["ai_summary"] = summarizer.summarize_paper(p) if not TEST_MODE else ""
         write_section(rm, issue, kw, papers, config.ISSUE_RESULTS_PER_KEYWORD if not TEST_MODE else keep)
+        export["keywords"][kw] = papers
         ok_keywords += 1
 
     if ok_keywords == 0 and not trending:
         raise SystemExit("所有数据源都失败了，不生成文件")
 
     # ---- 写文件 ----
-    print("[3/3] 生成 README.md 和每日 Issue ...")
+    print("[3/3] 生成 README.md、papers.json 和每日 Issue ...")
     with open("README.md", "w", encoding="utf-8") as f:
         f.write("\n".join(rm) + "\n")
+    with open("papers.json", "w", encoding="utf-8") as f:
+        json.dump(export, f, ensure_ascii=False, indent=1)
     os.makedirs(ISSUE_DIR, exist_ok=True)
     with open(ISSUE_BODY_FILE, "w", encoding="utf-8") as f:
         f.write(f"📚 论文日报 {today} · 关键词：{('、'.join(keywords))}\n" + "\n".join(issue) + "\n")

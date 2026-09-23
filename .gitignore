@@ -1,3 +1,10 @@
 __pycache__/
 *.pyc
 hf*.json
+
+# 🔑 密钥与本地运行产物——绝对不能推上 GitHub
+.env
+.env.*
+pdfs/
+*.pdf
+summaries/*.log
