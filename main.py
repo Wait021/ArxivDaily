@@ -7,6 +7,7 @@
 """
 import json
 import os
+import re
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -65,12 +66,26 @@ def write_section(rm: list, issue: list, title: str, papers: list, issue_top: in
         issue.append(paper_row(p, False))
 
 
+def preserve_deep_reading() -> str:
+    """从旧 README 里保留「深度解读」区块（本地智能体写入的内容，不能被每日重建覆盖）。"""
+    default = ("<!-- DEEP_READING_START -->\n## 📖 深度解读（本地 GLM 智能体生成）\n\n"
+               "_每天上午由本地智能体深度分析后更新，云端爬虫保留下表_\n\n"
+               "| 日期 | 分析篇数 | 链接 |\n| --- | --- | --- |\n"
+               "<!-- DEEP_READING_END -->")
+    try:
+        old = open("README.md", encoding="utf-8").read()
+        m = re.search(r"<!-- DEEP_READING_START -->.*?<!-- DEEP_READING_END -->", old, re.S)
+        return m.group(0) if m else default
+    except OSError:
+        return default
+
+
 def main():
     beijing = ZoneInfo("Asia/Shanghai")
     today = datetime.now(beijing).strftime("%Y-%m-%d")
     print(f"=== 论文日报 {today} ===")
 
-    rm = [f"# 📚 论文日报 · 翻译智能体 & Agent\n\n{config.README_INTRO}\n\nLast update: {today}"]
+    rm = [f"# 📚 论文日报 · 翻译智能体 & Agent\n\n{config.README_INTRO}\n\nLast update: {today}\n\n{preserve_deep_reading()}"]
     issue = []
 
     # ---- 本周热门（Hugging Face Trending）----
