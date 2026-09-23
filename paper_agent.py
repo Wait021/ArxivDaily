@@ -145,6 +145,25 @@ def pull_papers() -> dict:
         return json.load(f)
 
 
+def heal_if_needed(data: dict) -> dict:
+    """云端 arXiv 被限流导致关键词全空时，本地补抓（本机到 arXiv 一直畅通）。
+
+    直接复用 main.py 的完整抓取逻辑（无 LLM key 环境变量时它会自动跳过 AI 总结），
+    重写 README/papers.json/Issue 内容，随后正常走分析+推送。
+    """
+    if data.get("keywords"):
+        return data
+    print("⚠ 云端关键词抓取失败（arXiv 对数据中心限流），本地补抓中 ...")
+    r = sh([sys.executable, "main.py"])
+    if r.returncode != 0:
+        print(f"⚠ 本地补抓也失败: {r.stderr[-200:] if r.stderr else r.stdout[-200:]}")
+        return data
+    with open("papers.json", encoding="utf-8") as f:
+        healed = json.load(f)
+    print(f"✓ 本地补抓完成：{len(healed.get('keywords', {}))} 组关键词")
+    return healed
+
+
 def select_papers(data: dict, limit: int) -> list:
     """热门榜前 TRENDING_N 篇 + 各关键词轮询取，凑够 limit 篇，去重。"""
     picked, seen = [], set()
@@ -252,8 +271,9 @@ def publish(today: str, md: str, count: int):
     with open("README.md", "w", encoding="utf-8") as f:
         f.write(readme)
 
-    # 推送（summaries + README）
-    sh(["git", "add", "summaries/", "README.md"])
+    # 推送（summaries + README + 补抓时更新的 papers/issue 文件）
+    sh(["git", "add", "summaries/", "README.md", "papers.json",
+        ".github/daily_issue.md", ".github/issue_title.txt"])
     sh(["git", "commit", "-m", f"🤖 深度解读 {today}（{count} 篇）"])
     for _ in range(3):
         sh(["git", "pull", "--rebase", "origin", "main"])
@@ -289,7 +309,7 @@ def main():
 
     env = load_env()
     print(f"=== 本地论文智能体 {today} | 模型 {env['LLM_MODEL']} ===")
-    data = pull_papers()
+    data = heal_if_needed(pull_papers())
     limit = args.test if args.test else (TRENDING_N + KEYWORD_N)
     papers = select_papers(data, limit)
     print(f"选定 {len(papers)} 篇：")

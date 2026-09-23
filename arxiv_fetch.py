@@ -30,13 +30,13 @@ def _fetch(keyword: str, max_results: int) -> str:
     return urllib.request.urlopen(url, timeout=60).read().decode("utf-8")
 
 
-def fetch_papers(keyword: str, max_results: int, retries: int = 7):
+def fetch_papers(keyword: str, max_results: int, retries: int = 5):
     """返回论文列表 [{arxiv_id,title,abstract,link,date,comment}]，全部失败返回 None。
 
-    arXiv API 偶发 406/空结果（限流/后端抖动），重试往往就通，
-    用指数退避：5s → 10s → 20s → 30s → 45s → 60s → 60s
+    arXiv API 偶发 406/空结果（限流/后端抖动）。实测限流恢复需要 1-2 分钟，
+    短间隔重试只会反复撞墙，所以退避节奏拉长：15s → 45s → 90s → 120s → 120s
     """
-    backoffs = [5, 10, 20, 30, 45, 60, 60]
+    backoffs = [15, 45, 90, 120, 120]
     for i in range(retries):
         try:
             root = ET.fromstring(_fetch(keyword, max_results))
