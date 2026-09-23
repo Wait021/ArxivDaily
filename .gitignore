@@ -8,3 +8,4 @@ hf*.json
 pdfs/
 *.pdf
 summaries/*.log
+agent_run.log
