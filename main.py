@@ -6,6 +6,7 @@
   TEST_MODE=1 python main.py  # 快速冒烟测试（少量抓取，不调 LLM）
 """
 import os
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -90,14 +91,33 @@ def main():
     seen = {p["arxiv_id"] for p in trending}  # 跨关键词去重
 
     print(f"[2/3] 抓取 arXiv 关键词论文（{len(keywords)} 个关键词）...")
-    ok_keywords = 0
+    kw_papers, failed = {}, []
     for kw in keywords:
         print(f"  关键词: {kw}")
         papers = fetch_papers(kw, per_kw)
         if papers is None:
-            print("    抓取失败，跳过该关键词")
+            print("    抓取失败，稍后二次补抓")
+            failed.append(kw)
+        else:
+            kw_papers[kw] = papers
+        time.sleep(4)  # arXiv 官方要求的礼貌间隔（≥3 秒）
+
+    if failed and not TEST_MODE:
+        print(f"  等 90 秒后二次补抓 {len(failed)} 个失败关键词 ...")
+        time.sleep(90)
+        for kw in failed[:]:
+            print(f"  补抓: {kw}")
+            papers = fetch_papers(kw, per_kw)
+            if papers is not None:
+                kw_papers[kw] = papers
+                failed.remove(kw)
+            time.sleep(4)
+
+    ok_keywords = 0
+    for kw in keywords:
+        if kw not in kw_papers:
             continue
-        papers = [p for p in papers if p["arxiv_id"] not in seen][:keep]
+        papers = [p for p in kw_papers[kw] if p["arxiv_id"] not in seen][:keep]
         seen.update(p["arxiv_id"] for p in papers)
         for i, p in enumerate(papers[:n_sum]):
             print(f"  AI 总结 {i + 1}/{n_sum}: {p['title'][:50]}")

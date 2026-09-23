@@ -32,8 +32,13 @@ def _fetch(keyword: str, max_results: int, ua: str) -> str:
     return net.get(url, timeout=60, direct=True, headers={"User-Agent": ua}).decode("utf-8")
 
 
-def fetch_papers(keyword: str, max_results: int, retries: int = 6):
-    """返回论文列表 [{arxiv_id,title,abstract,link,date,comment}]，全部失败返回 None。"""
+def fetch_papers(keyword: str, max_results: int, retries: int = 7):
+    """返回论文列表 [{arxiv_id,title,abstract,link,date,comment}]，全部失败返回 None。
+
+    arXiv API 会间歇性返回 406（限流/后端抽风），同一样查询重试往往就通了，
+    所以用指数退避：5s → 10s → 20s → 30s → 45s → 60s → 60s
+    """
+    backoffs = [5, 10, 20, 30, 45, 60, 60]
     for i in range(retries):
         try:
             root = ET.fromstring(_fetch(keyword, max_results, USER_AGENTS[i % len(USER_AGENTS)]))
@@ -54,8 +59,8 @@ def fetch_papers(keyword: str, max_results: int, retries: int = 6):
                 })
             if papers:
                 return papers
-            # arXiv API 偶发返回空列表，睡 5 秒重试
+            # arXiv API 偶发返回空列表，也走重试
         except Exception as e:
             print(f"    arXiv 请求失败：{e}")
-        time.sleep(5)
+        time.sleep(backoffs[min(i, len(backoffs) - 1)])
     return None
