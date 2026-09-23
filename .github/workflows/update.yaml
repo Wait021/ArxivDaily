@@ -28,16 +28,28 @@ jobs:
       - name: Update papers（纯标准库爬虫，云端不使用任何大模型 key）
         run: python main.py
 
-      - name: Commit and push
+      - name: Commit and push（带竞争保护：本地智能体可能同时推送）
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add README.md papers.json .github/daily_issue.md .github/issue_title.txt
           if git diff --cached --quiet; then
             echo "今天没有变化，跳过提交"
-          else
-            git commit -m "📖 Update papers $(date -u +'%Y-%m-%d')"
-            git push
+            exit 0
+          fi
+          git commit -m "📖 Update papers $(date -u +'%Y-%m-%d')"
+          ok=0
+          for i in 1 2 3; do
+            if git pull --rebase origin main; then
+              if git push; then ok=1; break; fi
+            else
+              echo "⚠ rebase 冲突（本地与云端同时改了同一文件），第 $i 次放弃重试"
+              git rebase --abort 2>/dev/null || true
+            fi
+            sleep 10
+          done
+          if [ "$ok" != "1" ]; then
+            echo "⚠ 推送失败（与本地智能体竞争），README 更新放弃——Issue 仍会发布，明日运行会自动恢复"
           fi
 
       - name: Create daily issue（当天已有则跳过，避免手动触发时重复）
