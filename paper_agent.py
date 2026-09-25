@@ -25,6 +25,13 @@ from zoneinfo import ZoneInfo
 
 import config
 
+# 定时任务/重定向环境下 Python 输出默认走 GBK，打印 ⚠✓ 等字符会直接崩溃，强制 UTF-8
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 PROJ = os.path.dirname(os.path.abspath(__file__))
 os.chdir(PROJ)
 PDF_DIR = os.path.join(PROJ, "pdfs")

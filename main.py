@@ -17,6 +17,14 @@ import summarizer
 from arxiv_fetch import fetch_papers
 from trending import fetch_weekly_trending
 
+# 无控制台/重定向环境下防止 GBK 编码崩溃（打印 ⚠ 等字符）
+import sys as _sys
+for _s in (_sys.stdout, _sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 TEST_MODE = os.environ.get("TEST_MODE") == "1"
 
 ISSUE_DIR = ".github"
