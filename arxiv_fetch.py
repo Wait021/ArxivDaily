@@ -30,13 +30,14 @@ def _fetch(keyword: str, max_results: int) -> str:
     return urllib.request.urlopen(url, timeout=60).read().decode("utf-8")
 
 
-def fetch_papers(keyword: str, max_results: int, retries: int = 5):
+def fetch_papers(keyword: str, max_results: int, retries: int = 3):
     """返回论文列表 [{arxiv_id,title,abstract,link,date,comment}]，全部失败返回 None。
 
-    arXiv API 偶发 406/空结果（限流/后端抖动）。实测限流恢复需要 1-2 分钟，
-    短间隔重试只会反复撞墙，所以退避节奏拉长：15s → 45s → 90s → 120s → 120s
+    arXiv API 偶发 406/空结果（对数据中心 IP 的限流，恢复要 1-2 分钟甚至更久）。
+    云端抓不到没关系——本地 11:00 的智能体会自动补抓（本机到 arXiv 畅通），
+    所以云端快速放弃（3 次重试：15s → 45s → 90s），别把运行时间拖到两小时。
     """
-    backoffs = [15, 45, 90, 120, 120]
+    backoffs = [15, 45, 90]
     for i in range(retries):
         try:
             root = ET.fromstring(_fetch(keyword, max_results))
