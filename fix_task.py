@@ -1,18 +1,27 @@
 # -*- coding: utf-8 -*-
-"""用 ASCII 联接路径 C:\\ArxivDaily 重注册计划任务，绕开中文路径编码问题，并实测验证。"""
+"""维护工具：注册/修复 ArxivDailyAgent 计划任务（ASCII junction 路径，窗口最小化）。
+
+用法：
+  python fix_task.py           # 只注册任务
+  python fix_task.py --test    # 注册并立即触发一次（会跑完整分析，确认无并发时再用）
+
+要点：
+  - 必须先建 junction：C:\\ArxivDaily -> D:\\哈工大\\ZCode\\ArxivDaily（避开中文路径编码坑）
+  - 通过 run_daily.bat 启动（日志落 agent_run.log），start /MIN 让窗口最小化到任务栏
+"""
 import subprocess
-import time
+import sys
 
-PROJECT = r"C:\ArxivDaily"  # 指向 D:\哈工大\ZCode\ArxivDaily 的 junction（纯 ASCII）
+PROJECT = r"C:\ArxivDaily"
 TASK = "ArxivDailyAgent"
-PYTHON = r"C:\Users\Administrator\miniconda3\python.exe"
+BAT = PROJECT + r"\run_daily.bat"
 
-assert all(ord(c) < 128 for c in PROJECT + TASK + PYTHON), "路径必须纯 ASCII"
+assert all(ord(c) < 128 for c in PROJECT + TASK), "路径必须纯 ASCII（junction 方案）"
 
-# 全 ASCII 的 PowerShell 命令
+# 任务动作：cmd /c start "" /MIN bat  → 最小化窗口 + bat 内部重定向日志
 ps = (
-    f"$a = New-ScheduledTaskAction -Execute '{PYTHON}' "
-    f"-Argument '{PROJECT}\\paper_agent.py' -WorkingDirectory '{PROJECT}'; "
+    f"$a = New-ScheduledTaskAction -Execute 'cmd.exe' "
+    f"-Argument '/c start \"\" /MIN \"{BAT}\"' -WorkingDirectory '{PROJECT}'; "
     f"Set-ScheduledTask -TaskName '{TASK}' -Action $a | Out-Null; "
     f"(Get-ScheduledTask -TaskName '{TASK}').Actions[0] | Format-List Execute,Arguments,WorkingDirectory"
 )
@@ -23,15 +32,7 @@ if r.returncode != 0:
     print("ERR:", r.stderr)
     raise SystemExit(1)
 
-# 实测：启动任务，确认 python 进程真的跑起来
-subprocess.run(["powershell", "-NoProfile", "-Command", f"Start-ScheduledTask -TaskName '{TASK}'"])
-time.sleep(15)
-chk = subprocess.run(
-    ["powershell", "-NoProfile", "-Command",
-     "Get-Process python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id"],
-    capture_output=True, text=True)
-pids = chk.stdout.split()
-if pids:
-    print(f"✓ 任务实测成功：python 进程已启动 pid={','.join(pids)}（正在跑今天的分析，含 8 篇论文，约需 20-40 分钟）")
-else:
-    print("✗ 仍未检测到 python 进程，需要进一步排查")
+if "--test" in sys.argv:
+    subprocess.run(["powershell", "-NoProfile", "-Command",
+                    f"Start-ScheduledTask -TaskName '{TASK}'"])
+    print("任务已触发（最小化窗口，日志见 agent_run.log）")

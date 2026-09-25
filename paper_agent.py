@@ -146,21 +146,28 @@ def pull_papers() -> dict:
 
 
 def heal_if_needed(data: dict) -> dict:
-    """云端 arXiv 被限流导致关键词全空时，本地补抓（本机到 arXiv 一直畅通）。
+    """papers.json 缺失、关键词为空、或不是今天的数据时，本地重新抓取。
 
-    直接复用 main.py 的完整抓取逻辑（无 LLM key 环境变量时它会自动跳过 AI 总结），
-    重写 README/papers.json/Issue 内容，随后正常走分析+推送。
+    云端 arXiv 被限流时关键词会缺失；git pull 失败时会残留旧的本地文件——
+    两种情况都必须补抓，否则会拿过期论文做分析。
     """
-    if data.get("keywords"):
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+    if data.get("keywords") and data.get("date") == today:
         return data
-    print("⚠ 云端关键词抓取失败（arXiv 对数据中心限流），本地补抓中 ...")
+    if not data.get("keywords"):
+        print("⚠ 云端关键词抓取失败（arXiv 对数据中心限流），本地补抓中 ...")
+    else:
+        print(f"⚠ papers.json 是旧数据（{data.get('date')} ≠ {today}），本地重抓 ...")
     r = sh([sys.executable, "main.py"])
     if r.returncode != 0:
-        print(f"⚠ 本地补抓也失败: {r.stderr[-200:] if r.stderr else r.stdout[-200:]}")
+        print(f"⚠ 本地补抓失败: {r.stderr[-200:] if r.stderr else r.stdout[-200:]}")
         return data
     with open("papers.json", encoding="utf-8") as f:
         healed = json.load(f)
-    print(f"✓ 本地补抓完成：{len(healed.get('keywords', {}))} 组关键词")
+    if healed.get("date") == today:
+        print(f"✓ 本地补抓完成：{len(healed.get('keywords', {}))} 组关键词")
+        return healed
+    print("⚠ 补抓后日期仍不符，凑合用最新数据")
     return healed
 
 
