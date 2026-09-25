@@ -138,8 +138,9 @@ def chat(env: dict, prompt: str, max_tokens: int = 16000) -> str:
     raise RuntimeError(f"GLM 调用失败: {last_err}")
 
 
-def sh(cmd: list, **kw) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", **kw)
+def sh(cmd: list, timeout: float = None, **kw) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                          timeout=timeout, **kw)
 
 
 # ---------- 数据获取 ----------
@@ -165,7 +166,11 @@ def heal_if_needed(data: dict) -> dict:
         print("⚠ 云端关键词抓取失败（arXiv 对数据中心限流），本地补抓中 ...")
     else:
         print(f"⚠ papers.json 是旧数据（{data.get('date')} ≠ {today}），本地重抓 ...")
-    r = sh([sys.executable, "main.py"])
+    try:
+        r = sh([sys.executable, "main.py"], timeout=1200)  # 20 分钟硬上限，防 DNS/代理僵死
+    except subprocess.TimeoutExpired:
+        print("⚠ 本地补抓超时（20 分钟，疑似网络僵死），用现有数据继续")
+        return data
     if r.returncode != 0:
         print(f"⚠ 本地补抓失败: {r.stderr[-200:] if r.stderr else r.stdout[-200:]}")
         return data
