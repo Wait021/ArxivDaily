@@ -18,10 +18,10 @@ BAT = PROJECT + r"\run_daily.bat"
 
 assert all(ord(c) < 128 for c in PROJECT + TASK), "路径必须纯 ASCII（junction 方案）"
 
-# 任务动作：cmd /c start "" /MIN bat  → 最小化窗口 + bat 内部重定向日志
+# 任务动作：wscript 静默启动 vbs → bat 完全隐藏运行（无窗口无任务栏），日志落 agent_run.log
 ps = (
-    f"$a = New-ScheduledTaskAction -Execute 'cmd.exe' "
-    f"-Argument '/c start \"\" /MIN \"{BAT}\"' -WorkingDirectory '{PROJECT}'; "
+    f"$a = New-ScheduledTaskAction -Execute 'wscript.exe' "
+    f"-Argument '\"{PROJECT}\\invisible_agent.vbs\"' -WorkingDirectory '{PROJECT}'; "
     f"Set-ScheduledTask -TaskName '{TASK}' -Action $a | Out-Null; "
     f"(Get-ScheduledTask -TaskName '{TASK}').Actions[0] | Format-List Execute,Arguments,WorkingDirectory"
 )
