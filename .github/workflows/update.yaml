@@ -1,9 +1,12 @@
 name: Update
 
+# ⚠️ 2026-09-28 起云端运行已停用（Actions 计费）：
+#   - 仓库 Actions 权限已关闭（enabled=false）
+#   - 本 workflow 已 disable，且删除了 schedule 触发器
+#   - 日报改由本地 11:00 的计划任务全权负责（paper_agent.py，含 Issue 创建）
+# 如需恢复云端：仓库 Settings→Actions 打开 + gh workflow enable + 加回 schedule
 on:
-  workflow_dispatch:      # 支持手动触发，方便测试
-  schedule:
-    - cron: "30 2 * * *"  # 每天 UTC 2:30 = 北京时间 10:30（GitHub 定时任务可能有几分钟延迟）
+  workflow_dispatch:
 
 permissions:
   contents: write   # 允许更新 README
