@@ -302,16 +302,33 @@ def publish(today: str, md: str, count: int):
             break
         time.sleep(5)
 
-    # ③ 评论当天 Issue
+    # ③ 评论当天 Issue；云端已停（省 Actions 费用），当天 Issue 不存在且数据新鲜时由本地创建
     title = f"📚 论文日报 - {today}"
-    r = sh([GH, "issue", "list", "--state", "open", "--json", "number,title", "--jq",
-            f'.[] | select(.title == "{title}") | .number'])
-    if r.stdout.strip():
-        number = r.stdout.strip().splitlines()[0]
+
+    def find_issue():
+        r = sh([GH, "issue", "list", "--state", "open", "--json", "number,title", "--jq",
+                f'.[] | select(.title == "{title}") | .number'])
+        return r.stdout.strip().splitlines()[0] if r.stdout.strip() else None
+
+    number = find_issue()
+    if number is None:
+        try:
+            fresh = json.load(open("papers.json", encoding="utf-8")).get("date") == today
+        except Exception:
+            fresh = False
+        if fresh:
+            sh([GH, "label", "create", "daily", "--color", "0E8A16", "--force"])
+            if sh([GH, "issue", "create", "--title", title, "--label", "daily",
+                   "--body-file", ".github/daily_issue.md"]).returncode == 0:
+                print("  ✓ 云端已停，本地已代发当天日报 Issue")
+                number = find_issue()
+        else:
+            print("  ⚠ 数据非今日（补抓失败），不创建 Issue 以免发旧内容")
+    if number:
         r2 = sh([GH, "issue", "comment", number, "--body-file", path])
         print(f"  ✓ 已评论 Issue #{number}" if r2.returncode == 0 else f"  ⚠ Issue 评论失败: {r2.stderr[:100]}")
     else:
-        print("  ⚠ 没找到当天的日报 Issue，跳过评论（summaries 已存档）")
+        print("  ⚠ 未找到当天 Issue，跳过评论（summaries 已存档）")
 
 
 def main():
