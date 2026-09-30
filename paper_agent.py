@@ -317,11 +317,17 @@ def publish(today: str, md: str, count: int):
         except Exception:
             fresh = False
         if fresh:
+            auth = sh([GH, "auth", "status"])
+            if auth.returncode != 0:
+                print(f"  ✗ gh 认证不可用（定时任务环境）: {auth.stderr[:150]}")
             sh([GH, "label", "create", "daily", "--color", "0E8A16", "--force"])
-            if sh([GH, "issue", "create", "--title", title, "--label", "daily",
-                   "--body-file", ".github/daily_issue.md"]).returncode == 0:
+            c = sh([GH, "issue", "create", "--title", title, "--label", "daily",
+                    "--body-file", ".github/daily_issue.md"])
+            if c.returncode == 0:
                 print("  ✓ 云端已停，本地已代发当天日报 Issue")
                 number = find_issue()
+            else:
+                print(f"  ✗ Issue 创建失败: {(c.stderr or c.stdout)[-250:]}")
         else:
             print("  ⚠ 数据非今日（补抓失败），不创建 Issue 以免发旧内容")
     if number:
