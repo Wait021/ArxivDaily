@@ -13,6 +13,7 @@ Last update: 2026-10-13
 
 | 日期 | 分析篇数 | 链接 |
 | --- | --- | --- |
+| 2026-10-14 | 8 篇 | [summaries/2026-10-14.md](summaries/2026-10-14.md) |
 | 2026-10-13 | 8 篇 | [summaries/2026-10-13.md](summaries/2026-10-13.md) |
 | 2026-10-12 | 8 篇 | [summaries/2026-10-12.md](summaries/2026-10-12.md) |
 | 2026-10-11 | 8 篇 | [summaries/2026-10-11.md](summaries/2026-10-11.md) |
