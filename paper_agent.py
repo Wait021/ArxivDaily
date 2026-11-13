@@ -269,6 +269,26 @@ def synthesize(digests: list, env: dict) -> str:
 
 # ---------- 三路分发 ----------
 
+def prepare_issue_body(path: str = ".github/daily_issue.md") -> str:
+    """Issue 正文超 GraphQL 65536 字符上限时截断（关键词多后必超），加链接尾注。
+
+    返回实际可用的 body 文件路径（未超长则用原文件）。
+    """
+    LIMIT = 60000
+    body = open(path, encoding="utf-8").read()
+    if len(body) <= LIMIT:
+        return path
+    cut = body[:LIMIT]
+    nl = cut.rfind("\n")  # 在行边界截断，避免破坏表格行
+    if nl > LIMIT * 0.8:
+        cut = cut[:nl]
+    cut += ("\n\n---\n\n> 📋 论文表格过长已截断。完整列表见 [README](https://github.com/Wait021/ArxivDaily)，"
+            "当日深度解读见本 Issue 下方评论。\n")
+    out = ".github/daily_issue_body.md"
+    open(out, "w", encoding="utf-8").write(cut)
+    return out
+
+
 def publish(today: str, md: str, count: int):
     # ① summaries/ 存档
     os.makedirs(SUMMARY_DIR, exist_ok=True)
@@ -321,8 +341,9 @@ def publish(today: str, md: str, count: int):
             if auth.returncode != 0:
                 print(f"  ✗ gh 认证不可用（定时任务环境）: {auth.stderr[:150]}")
             sh([GH, "label", "create", "daily", "--color", "0E8A16", "--force"])
+            body_file = prepare_issue_body()
             c = sh([GH, "issue", "create", "--title", title, "--label", "daily",
-                    "--body-file", ".github/daily_issue.md"])
+                    "--body-file", body_file])
             if c.returncode == 0:
                 print("  ✓ 云端已停，本地已代发当天日报 Issue")
                 number = find_issue()

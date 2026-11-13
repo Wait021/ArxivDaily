@@ -3,14 +3,24 @@
 
 # ============ 论文追踪关键词 ============
 # 每个关键词会同时在 arXiv 的【标题】和【摘要】里做短语搜索，按最近更新时间排序。
-# 想增删直接改这个列表即可。
+# 三条调研主线：①翻译/PPT 智能体 ②生物智能体 ③教学智能体
 KEYWORDS = [
-    "Translation Agent",                   # 翻译智能体（核心方向）
+    # --- 主线①：翻译智能体（核心方向）---
+    "Translation Agent",                   # 翻译智能体
     "LLM Translation",                     # 大模型翻译
     "Machine Translation",                 # 机器翻译（领域大方向）
     "Document-Level Machine Translation",  # 篇章级翻译：PPT/XML 等富文档翻译的基础
     "Slide Generation",                    # PPT/幻灯片生成
     "Slide Understanding",                 # PPT/幻灯片理解
+    # --- 主线②：生物智能体（AI for Biology）---
+    "AI for Biology",                      # 生物领域 AI（宽口径）
+    "Drug Discovery",                      # 药物发现（生物 Agent 最大应用面）
+    "Scientific Agent",                    # 科学研究 Agent（生物/化学/材料实验自动化）
+    # --- 主线③：教学智能体（AI Tutoring）---
+    "Educational Agent",                   # 教育 Agent
+    "Tutoring Agent",                      # 辅导/导师 Agent
+    "Intelligent Tutoring",                # 智能辅导系统（经典教育技术词，LLM 新方向）
+    # --- 通用 Agent 技术 ---
     "LLM Agent",                           # Agent 大方向
     "Tool Use",                            # 工具调用（Agent 核心能力）
 ]
@@ -40,10 +50,14 @@ SUMMARIZE_PER_KEYWORD = 5   # 每个关键词给前几篇生成 AI 全文中文�
 SUMMARIZE_TRENDING = 8      # 热门榜里给前几篇生成 AI 总结
 FULLTEXT_MAX_CHARS = 30000  # 论文全文最多截取多少字符喂给模型（控制 token 花费）
 
-# 你的研究方向画像，会注入总结 prompt，让 AI 顺便给论文标注与你的相关度
+# 你的研究方向画像（三条主线），会注入总结 prompt，让 AI 顺便给论文标注与你的相关度
 RESEARCH_PROFILE = (
-    "我的研究方向是翻译智能体（Translation Agent），特别是 PPT/幻灯片、XML 等"
-    "富结构文档的 LLM 自动翻译，以及 LLM Agent、工具调用（Tool Use）相关技术。"
+    "我的研究方向有三条主线：①翻译智能体（Translation Agent）——特别是 PPT/幻灯片、"
+    "XML 等富结构文档的 LLM 自动翻译，以及文档级机器翻译的评测与智能体化；"
+    "②生物智能体（AI for Biology）——生物医药领域的 LLM Agent，如药物发现、"
+    "实验规划与自动化科研；③教学智能体（AI Tutoring）——教育领域的 Agent、"
+    "个性化辅导与智能教学系统。通用技术兴趣：LLM Agent、工具调用（Tool Use）、"
+    "多智能体协作与评测。"
 )
 
 # ============ 输出 ============
