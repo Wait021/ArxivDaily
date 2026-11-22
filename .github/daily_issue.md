@@ -1,4 +1,4 @@
-📚 论文日报 2026-11-21 · 关键词：Translation Agent、LLM Translation、Machine Translation、Document-Level Machine Translation、Slide Generation、Slide Understanding、AI for Biology、Drug Discovery、Scientific Agent、Educational Agent、Tutoring Agent、Intelligent Tutoring、LLM Agent、Tool Use
+📚 论文日报 2026-11-22 · 关键词：Translation Agent、LLM Translation、Machine Translation、Document-Level Machine Translation、Slide Generation、Slide Understanding、AI for Biology、Drug Discovery、Scientific Agent、Educational Agent、Tutoring Agent、Intelligent Tutoring、LLM Agent、Tool Use
 
 ## 🔥 本周热门 · Hugging Face Trending
 
