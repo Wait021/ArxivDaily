@@ -127,7 +127,7 @@ def load_env() -> dict:
     return env
 
 
-def chat(env: dict, prompt: str, max_tokens: int = 32000) -> str:
+def chat(env: dict, prompt: str, max_tokens: int = 32000, thinking: bool = True) -> str:
     """GLM 调用，返回完整的回答正文。
 
     输出预算不够时接口有两种表现，都不能直接采用：正文被截断并返回 finish_reason == "length"
@@ -135,6 +135,9 @@ def chat(env: dict, prompt: str, max_tokens: int = 32000) -> str:
     usage 里的 reasoning_tokens 字段实测约等于输出总数减一、开关思考都一样，不能当思考量用。
     处理顺序：预算翻倍重试，上限 64000；还不够就关闭思考再试（thinking 参数已实测可用，
     代价是分析会浅一些，但总比半截强）。
+
+    thinking=False 直接关闭模型思考，用在不需要深度推理的任务上。2026-11-24 实测同一批 15 篇摘要的
+    筛选笔记：开着思考 16 分钟、6 万多输出 token，关掉后 34 秒、2100 个 token，质量没有下降。
     """
 
     def _post(body: dict):
@@ -150,6 +153,8 @@ def chat(env: dict, prompt: str, max_tokens: int = 32000) -> str:
         "temperature": 0.3,
         "max_tokens": max_tokens,
     }
+    if not thinking:
+        body["thinking"] = {"type": "disabled"}
     last_err = None
     for attempt in range(4):
         try:
@@ -486,7 +491,7 @@ def write_briefs(data: dict, env: dict):
     result = existing
     if have < len(papers):
         result = briefs_mod.generate_briefs(
-            papers, lambda prompt, max_tokens: chat(env, prompt, max_tokens), existing,
+            papers, lambda prompt, max_tokens: chat(env, prompt, max_tokens, thinking=False), existing,
             on_progress=briefs_mod.save_briefs)  # 每批成功即落盘，中途崩了也不丢已花的钱
         briefs_mod.save_briefs(result)
         missing = sum(1 for p in papers if p["arxiv_id"] not in result)

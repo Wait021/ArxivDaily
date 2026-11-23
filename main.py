@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """入口：抓论文 → 按已有简介渲染 README.md 和每日 Issue 正文。
 
-本文件不调模型：中文简介由 paper_agent.py 生成并缓存在 briefs.json，这里只读取。
+本文件不调模型：筛选笔记由 paper_agent.py 生成并缓存在 briefs.json，这里只读取。
 每天 11:00 由 paper_agent.py 的本地计划任务驱动（GitHub Actions 已停用）。
 
 用法：
@@ -41,26 +41,29 @@ def esc(text: str) -> str:
 
 
 STARS_BAR = {1: "⭐", 2: "⭐⭐", 3: "⭐⭐⭐", 4: "⭐⭐⭐⭐", 5: "⭐⭐⭐⭐⭐"}
+# 筛选笔记的三段：字段名 → 表格里显示的标签。"作者报告"和"判断"分开标，提醒读者前者是作者的声称
+BRIEF_PARTS = (("what", "做法"), ("result", "作者报告"), ("verdict", "判断"))
 
 
 def ai_cell(paper: dict, brief: dict | None, with_abstract: bool = True) -> str:
-    """表格第三列：中文简介 + 相关度星级；没有简介时回退到折叠的英文原摘要。
+    """表格第三列：筛选笔记（做法 / 作者报告 / 判断）+ 相关度星级；没有笔记时回退到折叠的英文原摘要。
 
     brief 来自 briefs.json（按 arXiv 编号缓存）。
-    with_abstract=False（日报 Issue 用）：有简介时省略英文摘要。Issue 正文有 65536 字符上限，
+    with_abstract=False（日报 Issue 用）：有笔记时省略英文摘要。Issue 正文有 65536 字符上限，
     带着摘要只能放下前几个关键词，省掉后全部关键词都能进日报；完整版在 README 里。
     """
     abstract = esc(paper.get("abstract", ""))[:800]
     folded = f"<details><summary>📄 英文原摘要</summary><p>{abstract}</p></details>" if abstract else ""
-    if not brief or not brief.get("summary"):
+    if not brief or not brief.get("what"):
         return folded or "（无摘要）"
+    parts = [f"**{label}**：{brief[key].replace('|', '\\|')}" for key, label in BRIEF_PARTS if brief.get(key)]
+    blocks = ["<br>".join(parts)]  # 三段之间单换行；星级、摘要各成一段，段间空一行
     stars = STARS_BAR.get(brief.get("stars", 0), "")
-    parts = [brief["summary"].replace("|", "\\|")]
     if stars:
-        parts.append(f"**相关度 {stars}**")
+        blocks.append(f"**相关度 {stars}**")
     if folded and with_abstract:
-        parts.append(folded)
-    return "<br><br>".join(parts)
+        blocks.append(folded)
+    return "<br><br>".join(blocks)
 
 
 def paper_row(paper: dict, brief: dict | None = None, with_votes: bool = False,
@@ -80,13 +83,13 @@ def write_section(rm: list, issue: list, title: str, papers: list, briefs: dict,
                   issue_top: int, with_votes=False):
     rm.append(f"\n## {title}\n")
     if with_votes:
-        rm.append("| **标题** | **日期** | **热度** | **🤖 中文简介** |")
+        rm.append("| **标题** | **日期** | **热度** | **筛选笔记** |")
         rm.append("| --- | --- | --- | --- |")
     else:
-        rm.append("| **标题** | **日期** | **🤖 中文简介** |")
+        rm.append("| **标题** | **日期** | **筛选笔记** |")
         rm.append("| --- | --- | --- |")
     issue.append(f"\n## {title}\n")
-    issue.append("| **标题** | **日期** | **🤖 中文简介** |")
+    issue.append("| **标题** | **日期** | **筛选笔记** |")
     issue.append("| --- | --- | --- |")
     for p in papers:
         rm.append(paper_row(p, briefs.get(p["arxiv_id"]), with_votes))
@@ -134,7 +137,7 @@ def render(data: dict, briefs: dict, issue_top: int | None = None, trending_top:
     trending_top = config.TRENDING_TOP_N if trending_top is None else trending_top
     papers = briefs_mod.all_papers(data)
     covered = sum(1 for p in papers if p["arxiv_id"] in briefs)
-    print(f"  表格共 {len(papers)} 篇论文，{covered} 篇有中文简介，{len(papers) - covered} 篇暂用英文摘要")
+    print(f"  表格共 {len(papers)} 篇论文，{covered} 篇有筛选笔记，{len(papers) - covered} 篇暂用英文摘要")
     readme, issue_body = build_tables(data, briefs, issue_top, trending_top)
     with open("README.md", "w", encoding="utf-8") as f:
         f.write(readme)

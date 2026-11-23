@@ -12,28 +12,28 @@ import os
 import re
 
 BRIEFS_FILE = "briefs.json"
-# 每次调用打包多少篇。20 篇时模型的思考会把输出预算占满导致截断（2026-11-23 实测 20 篇只出来 15 篇），
-# 降到 15 篇并配合 generate_briefs 里的输出预算
-BATCH_SIZE = 15
+# 每次调用打包多少篇。筛选笔记是关掉模型思考生成的（见 paper_agent.write_briefs），
+# 20 篇的输出只有约 3000 token，不会触及输出预算
+BATCH_SIZE = 20
 # 筛选笔记的写法版本。改写下面的 PROMPT 时把它加 1，旧写法的笔记会被视为不存在并自动重新生成
-BRIEF_VERSION = 2
+BRIEF_VERSION = 3
 
 PROMPT = """你是我的论文筛选助手。我每天要从几百篇 arXiv 论文里挑出值得读全文的，现在只有标题和摘要。请为下面 {n} 篇论文各写一条筛选笔记。
 
-我的研究方向：①翻译智能体（PPT/幻灯片、XML 等富结构文档的 LLM 翻译，文档级机器翻译评测）②生物智能体（药物发现、实验规划、自动化科研）③教学智能体（个性化辅导、智能教学）④LLM Agent 与工具调用。
+我的研究方向：①翻译智能体（PPT/幻灯片、XML 等富结构文档的 LLM 翻译，文档级翻译及其评测）②生物智能体（药物发现、实验规划、自动化科研）③教学智能体（个性化辅导、智能教学）④LLM Agent 与工具调用。
 
-每条笔记 80 到 130 个字，按这个顺序写：
-1. 这篇论文解决什么问题、怎么做。用大白话，不堆术语；方法名、模型名、数据集名保留英文。
-2. 作者声称的结果。摘要里有数字就带上数字。一律用"作者称""作者报告"引出，不要写成已经证实的事实。如果摘要声称了效果提升却没给任何数字，在后面写"摘要未给数字"；没有做效果声称的论文（比如发布数据集、介绍框架）不写这句。
-3. 一句判断：只看摘要，这篇最值得留意的地方。比如只有小规模评测、只有自动指标、是立场或综述文章、和我的方向关系不大但某个设计可以借鉴。没有值得特别指出的，这一句省略。
+每条笔记分三段，三段合计不超过 150 个字：
+- what（做法）：这篇论文解决什么问题、怎么做，不超过 45 个字。用大白话，不堆术语；方法名、模型名、数据集名保留英文。
+- result（作者报告）：摘要里的结果和关键数字，不超过 70 个字。这是作者的声称，不是已经证实的事实，不要替作者加"显著""大幅"这类评价。摘要声称了效果提升却没给任何数字，就写"摘要未给数字"；没有做效果声称的论文（发布数据集、介绍框架、立场文章等）写"无效果声称"。
+- verdict（判断）：一句话，不超过 30 个字。只看摘要，说这篇最值得留意的地方：和我方向的关系，或者一眼能看出的局限（只有小规模评测、只有自动指标、只做一个语言对等）。和我方向无关的写"可跳过"加半句原因。
 
 硬性要求：
-- 只使用摘要里的信息，不要补充摘要没有的内容，也不要替作者下"效果好""显著提升"这类结论。
-- 相关度按我的研究方向打 1 到 5 星：5 星是论文本身就在做我的方向（翻译智能体、富结构文档翻译、文档级翻译及其评测、生物智能体、教学智能体）；4 星是不做这些方向，但它的方法或工具能直接用上；3 星是有间接借鉴；2 星是只是同属一个大领域；1 星是基本无关。没有关系的论文要敢于打 1 星。
+- 只使用摘要里的信息，不要补充摘要没有的内容。
+- stars 是相关度，按我的研究方向打 1 到 5 星：5 星是论文本身就在做我的方向；4 星是不做这些方向，但它的方法或工具能直接用上；3 星是有间接借鉴；2 星是只是同属一个大领域；1 星是基本无关。没有关系的论文要敢于打 1 星。
 - 每句话都要有信息量，不写"具有重要意义""值得关注"这类空话。
-- 严格按下面的格式输出，每篇一个 JSON 对象，不要输出任何其他文字：
+- 严格按下面的格式输出，每篇一个 JSON 对象，各字段的值是一段不换行的文字，不要输出任何其他文字：
 
-{{"id": "论文编号", "summary": "筛选笔记", "stars": 星数}}
+{{"id": "论文编号", "what": "做法", "result": "作者报告", "verdict": "判断", "stars": 3}}
 
 论文列表：
 """
@@ -67,23 +67,26 @@ def _parse_batch(text: str, ids: list) -> dict:
         except json.JSONDecodeError:
             continue
         key = str(obj.get("id", "")).strip()
-        summary = str(obj.get("summary", "")).strip()
+        parts = {f: " ".join(str(obj.get(f, "")).split()) for f in ("what", "result", "verdict")}
         try:
             stars = max(1, min(5, int(obj.get("stars", 1))))
         except (TypeError, ValueError):
             stars = 1
-        if key in wanted and summary:
-            out[key] = {"v": BRIEF_VERSION, "summary": summary, "stars": stars}
+        # 模型偶尔会把三段合起来塞进 summary；这时当作"做法"收下，总比丢掉整条强
+        if not parts["what"] and obj.get("summary"):
+            parts["what"] = " ".join(str(obj["summary"]).split())
+        if key in wanted and parts["what"]:
+            out[key] = {"v": BRIEF_VERSION, **parts, "stars": stars}
     return out
 
 
 def generate_briefs(papers: list, chat, existing: dict | None = None, on_progress=None) -> dict:
-    """为 papers 里还没有简介的论文批量生成。返回 {arxiv_id: {summary, stars}}。
+    """为 papers 里还没有简介的论文批量生成。返回 {arxiv_id: {what, result, verdict, stars, v}}。
 
     chat(prompt, max_tokens=...) 由调用方传入（复用 paper_agent.chat，不重复实现重试）。
     单批失败只丢那一批，不影响其他批次；失败的论文不写入缓存，下次运行会自动补。
     on_progress(briefs) 在每批成功后回调，调用方用它及时落盘——
-    避免 14 批里最后一批崩掉、前面 13 批的钱白花。
+    避免最后一批崩掉、前面几批白花。
     """
     briefs = dict(existing or {})
     seen, todo = set(), []
@@ -103,7 +106,7 @@ def generate_briefs(papers: list, chat, existing: dict | None = None, on_progres
         prompt = PROMPT.replace("{n}", str(len(batch))) + "\n".join(lines)
         done = min(start + len(batch), len(todo))
         try:
-            got = _parse_batch(chat(prompt, max_tokens=24000), [str(i) for i in range(1, len(batch) + 1)])
+            got = _parse_batch(chat(prompt, max_tokens=16000), [str(i) for i in range(1, len(batch) + 1)])
         except Exception as e:
             # 不写入缓存：这批论文下次运行会重新生成
             print(f"    ✗ 这一批简介失败（{done - len(batch) + 1}-{done}），下次补: {str(e)[:120]}", flush=True)
