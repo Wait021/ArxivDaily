@@ -53,18 +53,41 @@ def save_briefs(briefs: dict):
         json.dump(briefs, f, ensure_ascii=False, indent=1)
 
 
+def _repair(chunk: str) -> dict | None:
+    """JSON 解析失败时的兜底：按键名用正则把字段取出来。
+
+    模型偶尔在字段值里用了没转义的英文双引号，整条 JSON 就坏了。键的顺序是固定的，
+    所以用"下一个键名"来切分字段的结尾。
+    """
+    id_match = re.search(r'"id"\s*:\s*"?(\d+)"?', chunk)
+    if not id_match:
+        return None
+
+    def grab(key: str, next_key: str) -> str:
+        m = re.search(rf'"{key}"\s*:\s*"(.*?)"(?=\s*,\s*"{next_key}"\s*:)', chunk, re.S)
+        return m.group(1).strip() if m else ""
+
+    what = grab("what", "result")
+    if not what:
+        return None
+    stars = re.search(r'"stars"\s*:\s*"?([1-5])"?', chunk)
+    return {"id": id_match.group(1), "what": what, "result": grab("result", "verdict"),
+            "verdict": grab("verdict", "stars"), "stars": int(stars.group(1)) if stars else 1}
+
+
 def _parse_batch(text: str, ids: list) -> dict:
-    """从模型输出里解析 JSON 行。容忍模型加的 Markdown 代码围栏。"""
-    out = {}
-    text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M)
-    wanted = set(ids)
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
+    """从模型输出里取出每篇论文的 JSON 对象。
+
+    不按行切：模型通常一行一个对象，但偶尔会换成带缩进的多行数组，或者在字段值里写没转义的
+    英文双引号。这里用花括号把每个对象框出来逐个解析，解析失败的再按键名修一次。
+    """
+    out, wanted = {}, set(ids)
+    for chunk in re.findall(r"\{[^{}]*\}", text, re.S):
         try:
-            obj = json.loads(line)
+            obj = json.loads(chunk)
         except json.JSONDecodeError:
+            obj = _repair(chunk)
+        if not isinstance(obj, dict):
             continue
         key = str(obj.get("id", "")).strip()
         parts = {f: " ".join(str(obj.get(f, "")).split()) for f in ("what", "result", "verdict")}
@@ -81,10 +104,11 @@ def _parse_batch(text: str, ids: list) -> dict:
 
 
 def generate_briefs(papers: list, chat, existing: dict | None = None, on_progress=None) -> dict:
-    """为 papers 里还没有简介的论文批量生成。返回 {arxiv_id: {what, result, verdict, stars, v}}。
+    """为 papers 里还没有笔记的论文批量生成。返回 {arxiv_id: {what, result, verdict, stars, v}}。
 
     chat(prompt, max_tokens=...) 由调用方传入（复用 paper_agent.chat，不重复实现重试）。
-    单批失败只丢那一批，不影响其他批次；失败的论文不写入缓存，下次运行会自动补。
+    第一轮按 BATCH_SIZE 分批；一轮下来仍有没拿到笔记的（模型输出格式跑偏、调用失败等），
+    换成每批 10 篇再试一次。仍失败的论文不写入缓存，下次运行会自动补。
     on_progress(briefs) 在每批成功后回调，调用方用它及时落盘——
     避免最后一批崩掉、前面几批白花。
     """
@@ -98,27 +122,37 @@ def generate_briefs(papers: list, chat, existing: dict | None = None, on_progres
             todo.append(p)
     if not todo:
         return briefs
-    for start in range(0, len(todo), BATCH_SIZE):
-        batch = todo[start:start + BATCH_SIZE]
-        lines = []
-        for i, p in enumerate(batch, 1):
-            lines.append(f"[{i}] 标题: {p['title']}\n    摘要: {p['abstract'][:2500]}")
-        prompt = PROMPT.replace("{n}", str(len(batch))) + "\n".join(lines)
-        done = min(start + len(batch), len(todo))
-        try:
-            got = _parse_batch(chat(prompt, max_tokens=16000), [str(i) for i in range(1, len(batch) + 1)])
-        except Exception as e:
-            # 不写入缓存：这批论文下次运行会重新生成
-            print(f"    ✗ 这一批简介失败（{done - len(batch) + 1}-{done}），下次补: {str(e)[:120]}", flush=True)
-            continue
-        for i, p in enumerate(batch, 1):
-            if str(i) in got:
-                briefs[p["arxiv_id"]] = got[str(i)]
-        missing = len(batch) - len(got)
-        note = f"（{missing} 篇未解析出，下次补）" if missing else ""
-        print(f"    简介 {done}/{len(todo)}{note}", flush=True)
-        if on_progress:
-            on_progress(briefs)
+
+    def run(queue: list, size: int):
+        for start in range(0, len(queue), size):
+            batch = queue[start:start + size]
+            lines = []
+            for i, p in enumerate(batch, 1):
+                lines.append(f"[{i}] 标题: {p['title']}\n    摘要: {p['abstract'][:2500]}")
+            prompt = PROMPT.replace("{n}", str(len(batch))) + "\n".join(lines)
+            ids = [str(i) for i in range(1, len(batch) + 1)]
+            try:
+                raw = chat(prompt, max_tokens=16000)
+                got = _parse_batch(raw, ids)
+            except Exception as e:
+                print(f"    ✗ 这一批调用失败，稍后重试: {str(e)[:120]}", flush=True)
+                continue
+            for i, p in enumerate(batch, 1):
+                if str(i) in got:
+                    briefs[p["arxiv_id"]] = got[str(i)]
+            if on_progress:
+                on_progress(briefs)
+            got_n = sum(1 for p in todo if p["arxiv_id"] in briefs)
+            print(f"    笔记 {got_n}/{len(todo)}", flush=True)
+            if len(got) < len(batch):
+                # 把模型输出的开头打进日志，格式跑偏时才有线索可查
+                print(f"    ⚠ 这批有 {len(batch) - len(got)} 篇没解析出来，模型输出开头：{raw[:150]!r}", flush=True)
+
+    run(todo, BATCH_SIZE)
+    leftover = [p for p in todo if p["arxiv_id"] not in briefs]
+    if leftover:
+        print(f"    {len(leftover)} 篇还没拿到笔记，换成每批 10 篇再试一次", flush=True)
+        run(leftover, 10)
     return briefs
 
 
