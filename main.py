@@ -1,9 +1,12 @@
 # -*- coding: utf-8 -*-
-"""入口：抓论文 → AI 全文总结 → 生成 README.md 和每日 Issue。
+"""入口：抓论文 → 按已有简介渲染 README.md 和每日 Issue 正文。
+
+本文件不调模型：中文简介由 paper_agent.py 生成并缓存在 briefs.json，这里只读取。
+每天 11:00 由 paper_agent.py 的本地计划任务驱动（GitHub Actions 已停用）。
 
 用法：
-  python main.py          # 完整运行（GitHub Actions 每天自动跑，也可本地手动跑）
-  TEST_MODE=1 python main.py  # 快速冒烟测试（少量抓取，不调 LLM）
+  python main.py              # 抓取 + 渲染（可单独手动跑）
+  TEST_MODE=1 python main.py  # 快速冒烟测试（少量抓取）
 """
 import json
 import os
@@ -13,7 +16,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import config
-import summarizer
+import briefs as briefs_mod
 from arxiv_fetch import fetch_papers
 from trending import fetch_weekly_trending
 
@@ -37,15 +40,31 @@ def esc(text: str) -> str:
     return text.replace("|", "\\|").replace("\n", "<br>").strip()
 
 
-def ai_cell(paper: dict) -> str:
-    """表格第三列：优先 AI 总结，其次折叠的原始摘要。"""
-    if paper.get("ai_summary"):
-        return "<br>".join(paper["ai_summary"].splitlines())
+STARS_BAR = {1: "⭐", 2: "⭐⭐", 3: "⭐⭐⭐", 4: "⭐⭐⭐⭐", 5: "⭐⭐⭐⭐⭐"}
+
+
+def ai_cell(paper: dict, brief: dict | None, with_abstract: bool = True) -> str:
+    """表格第三列：中文简介 + 相关度星级；没有简介时回退到折叠的英文原摘要。
+
+    brief 来自 briefs.json（按 arXiv 编号缓存）。
+    with_abstract=False（日报 Issue 用）：有简介时省略英文摘要。Issue 正文有 65536 字符上限，
+    带着摘要只能放下前几个关键词，省掉后全部关键词都能进日报；完整版在 README 里。
+    """
     abstract = esc(paper.get("abstract", ""))[:800]
-    return f"<details><summary>📄 摘要</summary><p>{abstract}</p></details>" if abstract else ""
+    folded = f"<details><summary>📄 英文原摘要</summary><p>{abstract}</p></details>" if abstract else ""
+    if not brief or not brief.get("summary"):
+        return folded or "（无摘要）"
+    stars = STARS_BAR.get(brief.get("stars", 0), "")
+    parts = [brief["summary"].replace("|", "\\|")]
+    if stars:
+        parts.append(f"**相关度 {stars}**")
+    if folded and with_abstract:
+        parts.append(folded)
+    return "<br><br>".join(parts)
 
 
-def paper_row(paper: dict, with_votes: bool = False) -> str:
+def paper_row(paper: dict, brief: dict | None = None, with_votes: bool = False,
+              with_abstract: bool = True) -> str:
     votes = f" | **{paper['upvotes']}** 👍" if with_votes else ""
     comment = ""
     if paper.get("comment"):
@@ -53,25 +72,26 @@ def paper_row(paper: dict, with_votes: bool = False) -> str:
     pdf = f"https://arxiv.org/pdf/{paper['arxiv_id']}"
     return (
         f"| **[{esc(paper['title'])}]({paper['link']})** [📄]({pdf}){comment} "
-        f"| {paper.get('date', '')}{votes} | {ai_cell(paper)} |"
+        f"| {paper.get('date', '')}{votes} | {ai_cell(paper, brief, with_abstract)} |"
     )
 
 
-def write_section(rm: list, issue: list, title: str, papers: list, issue_top: int, with_votes=False):
+def write_section(rm: list, issue: list, title: str, papers: list, briefs: dict,
+                  issue_top: int, with_votes=False):
     rm.append(f"\n## {title}\n")
     if with_votes:
-        rm.append("| **标题** | **日期** | **热度** | **🤖 AI 总结** |")
+        rm.append("| **标题** | **日期** | **热度** | **🤖 中文简介** |")
         rm.append("| --- | --- | --- | --- |")
     else:
-        rm.append("| **标题** | **日期** | **🤖 AI 总结** |")
+        rm.append("| **标题** | **日期** | **🤖 中文简介** |")
         rm.append("| --- | --- | --- |")
     issue.append(f"\n## {title}\n")
-    issue.append("| **标题** | **日期** | **🤖 AI 总结** |")
+    issue.append("| **标题** | **日期** | **🤖 中文简介** |")
     issue.append("| --- | --- | --- |")
     for p in papers:
-        rm.append(paper_row(p, with_votes))
+        rm.append(paper_row(p, briefs.get(p["arxiv_id"]), with_votes))
     for p in papers[:issue_top]:
-        issue.append(paper_row(p, False))
+        issue.append(paper_row(p, briefs.get(p["arxiv_id"]), with_abstract=False))
 
 
 def preserve_deep_reading() -> str:
@@ -88,31 +108,57 @@ def preserve_deep_reading() -> str:
         return default
 
 
-def main():
-    beijing = ZoneInfo("Asia/Shanghai")
-    today = datetime.now(beijing).strftime("%Y-%m-%d")
-    print(f"=== 论文日报 {today} ===")
-
-    rm = [f"# 📚 论文日报 · 翻译智能体 & Agent\n\n{config.README_INTRO}\n\nLast update: {today}\n\n{preserve_deep_reading()}"]
+def build_tables(data: dict, briefs: dict, issue_top: int, trending_top: int) -> tuple[str, str]:
+    """把 papers 数据渲染成 (README 正文, Issue 正文)。"""
+    today = data["date"]
+    rm = [f"# 📚 论文日报 · 翻译智能体 & Agent\n\n{config.README_INTRO}\n\nLast update: {today}\n\n"
+          f"{preserve_deep_reading()}"]
     issue = []
+    trending = data.get("trending", [])
+    if trending:
+        write_section(rm, issue, "🔥 本周热门 · Hugging Face Trending", trending, briefs,
+                      trending_top, with_votes=True)
+    keywords = data.get("keywords", {})
+    for kw, papers in keywords.items():
+        write_section(rm, issue, kw, papers, briefs, issue_top)
+    head = f"📚 论文日报 {today} · 关键词：{('、'.join(keywords))}\n"
+    return "\n".join(rm) + "\n", head + "\n".join(issue) + "\n"
 
-    # ---- 本周热门（Hugging Face Trending）----
+
+def render(data: dict, briefs: dict, issue_top: int | None = None, trending_top: int | None = None):
+    """按已有数据和简介写出 README.md、papers.json 和每日 Issue 的标题、正文。
+
+    纯本地操作：不联网、不调模型。抓取之后、简介生成之后都调它来重写表格。
+    """
+    issue_top = config.ISSUE_RESULTS_PER_KEYWORD if issue_top is None else issue_top
+    trending_top = config.TRENDING_TOP_N if trending_top is None else trending_top
+    papers = briefs_mod.all_papers(data)
+    covered = sum(1 for p in papers if p["arxiv_id"] in briefs)
+    print(f"  表格共 {len(papers)} 篇论文，{covered} 篇有中文简介，{len(papers) - covered} 篇暂用英文摘要")
+    readme, issue_body = build_tables(data, briefs, issue_top, trending_top)
+    with open("README.md", "w", encoding="utf-8") as f:
+        f.write(readme)
+    with open("papers.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=1)
+    os.makedirs(ISSUE_DIR, exist_ok=True)
+    with open(ISSUE_BODY_FILE, "w", encoding="utf-8") as f:
+        f.write(issue_body)
+    with open(ISSUE_TITLE_FILE, "w", encoding="utf-8") as f:
+        f.write(f"📚 论文日报 - {data['date']}")
+
+
+def collect() -> dict:
+    """抓取热门榜和各关键词论文，返回 papers.json 的内容。"""
     days = 2 if TEST_MODE else config.TRENDING_DAYS
     top_n = 5 if TEST_MODE else config.TRENDING_TOP_N
     print(f"[1/3] 抓取 Hugging Face 最近 {days} 天热门论文 ...")
     trending = fetch_weekly_trending(days=days, top_n=top_n)
-    n_sum = 2 if TEST_MODE else config.SUMMARIZE_TRENDING
-    for i, p in enumerate(trending[:n_sum]):
-        print(f"  AI 总结 {i + 1}/{n_sum}: {p['title'][:50]}")
-        p["ai_summary"] = summarizer.summarize_paper(p) if not TEST_MODE else ""
-    if trending:
-        write_section(rm, issue, f"🔥 本周热门 · Hugging Face Trending", trending, top_n, with_votes=True)
+    for p in trending:
+        p["pdf"] = f"https://arxiv.org/pdf/{p['arxiv_id']}"
 
-    # ---- 关键词论文 ----
     keywords = config.KEYWORDS[:2] if TEST_MODE else config.KEYWORDS
     per_kw = 5 if TEST_MODE else config.MAX_RESULTS_PER_KEYWORD
     keep = 5 if TEST_MODE else config.KEEP_PER_KEYWORD
-    n_sum = 1 if TEST_MODE else config.SUMMARIZE_PER_KEYWORD
     seen = {p["arxiv_id"] for p in trending}  # 跨关键词去重
 
     print(f"[2/3] 抓取 arXiv 关键词论文（{len(keywords)} 个关键词）...")
@@ -138,12 +184,8 @@ def main():
                 failed.remove(kw)
             time.sleep(4)
 
-    ok_keywords = 0
-    export = {"date": today, "trending": [], "keywords": {}}
-    if trending:
-        for p in trending:
-            p["pdf"] = f"https://arxiv.org/pdf/{p['arxiv_id']}"
-        export["trending"] = trending
+    data = {"date": datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d"),
+            "trending": trending, "keywords": {}}
     for kw in keywords:
         if kw not in kw_papers:
             continue
@@ -151,27 +193,20 @@ def main():
         seen.update(p["arxiv_id"] for p in papers)
         for p in papers:
             p["pdf"] = f"https://arxiv.org/pdf/{p['arxiv_id']}"
-        for i, p in enumerate(papers[:n_sum]):
-            print(f"  AI 总结 {i + 1}/{n_sum}: {p['title'][:50]}")
-            p["ai_summary"] = summarizer.summarize_paper(p) if not TEST_MODE else ""
-        write_section(rm, issue, kw, papers, config.ISSUE_RESULTS_PER_KEYWORD if not TEST_MODE else keep)
-        export["keywords"][kw] = papers
-        ok_keywords += 1
+        data["keywords"][kw] = papers
 
-    if ok_keywords == 0 and not trending:
+    if not data["keywords"] and not trending:
         raise SystemExit("所有数据源都失败了，不生成文件")
+    return data
 
-    # ---- 写文件 ----
+
+def main():
+    today = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+    print(f"=== 论文日报 {today} ===")
+    data = collect()
     print("[3/3] 生成 README.md、papers.json 和每日 Issue ...")
-    with open("README.md", "w", encoding="utf-8") as f:
-        f.write("\n".join(rm) + "\n")
-    with open("papers.json", "w", encoding="utf-8") as f:
-        json.dump(export, f, ensure_ascii=False, indent=1)
-    os.makedirs(ISSUE_DIR, exist_ok=True)
-    with open(ISSUE_BODY_FILE, "w", encoding="utf-8") as f:
-        f.write(f"📚 论文日报 {today} · 关键词：{('、'.join(keywords))}\n" + "\n".join(issue) + "\n")
-    with open(ISSUE_TITLE_FILE, "w", encoding="utf-8") as f:
-        f.write(f"📚 论文日报 - {today}")
+    small = 5 if TEST_MODE else None  # 冒烟测试时每个分区只放少量论文
+    render(data, briefs_mod.load_briefs(), issue_top=small, trending_top=small)
     print("完成：README.md 已更新，Issue 内容已生成")
 
 

@@ -289,6 +289,42 @@ def prepare_issue_body(path: str = ".github/daily_issue.md") -> str:
     return out
 
 
+def find_issue(title: str) -> str | None:
+    """返回标题正好是 title 的开放 Issue 编号，没有则 None。"""
+    r = sh([GH, "issue", "list", "--state", "open", "--json", "number,title", "--jq",
+            f'.[] | select(.title == "{title}") | .number'])
+    return r.stdout.strip().splitlines()[0] if r.stdout.strip() else None
+
+
+def push(message: str) -> bool:
+    """提交并推送当天产物（最多试 3 次，每次先同步远端）。"""
+    # 只添加存在的文件：pathspec 不存在时 git add 会整条失败，什么都不加
+    paths = [p for p in ("summaries/", "briefs.json", "README.md", "papers.json",
+                         ".github/daily_issue.md", ".github/issue_title.txt") if os.path.exists(p)]
+    sh(["git", "add", *paths])
+    sh(["git", "commit", "-m", message])
+    for _ in range(3):
+        sh(["git", "pull", "--rebase", "origin", "main"])
+        if sh(["git", "push"]).returncode == 0:
+            print("  ✓ 已推送到 GitHub")
+            return True
+        time.sleep(5)
+    print("  ⚠ 推送失败：改动留在本地，下次运行会一起推上去")
+    return False
+
+
+def publish_briefs(today: str):
+    """--briefs-only 的收尾：推送表格和简介缓存，并把当天日报 Issue 的正文换成新表格。"""
+    push(f"🈶 中文简介 {today}")
+    number = find_issue(f"📚 论文日报 - {today}")
+    if number is None:
+        print("  ⚠ 当天还没有日报 Issue，之后创建时会直接用新表格")
+        return
+    r = sh([GH, "issue", "edit", number, "--body-file", prepare_issue_body()])
+    print(f"  ✓ 已把 Issue #{number} 的正文换成中文表格" if r.returncode == 0
+          else f"  ⚠ 更新 Issue #{number} 失败: {(r.stderr or r.stdout)[:150]}")
+
+
 def publish(today: str, md: str, count: int):
     # ① summaries/ 存档
     os.makedirs(SUMMARY_DIR, exist_ok=True)
@@ -310,27 +346,11 @@ def publish(today: str, md: str, count: int):
     with open("README.md", "w", encoding="utf-8") as f:
         f.write(readme)
 
-    # 推送（summaries + README + 补抓时更新的 papers/issue 文件）
-    sh(["git", "add", "summaries/", "README.md", "papers.json",
-        ".github/daily_issue.md", ".github/issue_title.txt"])
-    sh(["git", "commit", "-m", f"🤖 深度解读 {today}（{count} 篇）"])
-    for _ in range(3):
-        sh(["git", "pull", "--rebase", "origin", "main"])
-        r = sh(["git", "push"])
-        if r.returncode == 0:
-            print("  ✓ 已推送到 GitHub")
-            break
-        time.sleep(5)
+    push(f"🤖 深度解读 {today}（{count} 篇）")
 
     # ③ 评论当天 Issue；云端已停（省 Actions 费用），当天 Issue 不存在且数据新鲜时由本地创建
     title = f"📚 论文日报 - {today}"
-
-    def find_issue():
-        r = sh([GH, "issue", "list", "--state", "open", "--json", "number,title", "--jq",
-                f'.[] | select(.title == "{title}") | .number'])
-        return r.stdout.strip().splitlines()[0] if r.stdout.strip() else None
-
-    number = find_issue()
+    number = find_issue(title)
     if number is None:
         try:
             fresh = json.load(open("papers.json", encoding="utf-8")).get("date") == today
@@ -346,7 +366,7 @@ def publish(today: str, md: str, count: int):
                     "--body-file", body_file])
             if c.returncode == 0:
                 print("  ✓ 云端已停，本地已代发当天日报 Issue")
-                number = find_issue()
+                number = find_issue(title)
             else:
                 print(f"  ✗ Issue 创建失败: {(c.stderr or c.stdout)[-250:]}")
         else:
@@ -358,21 +378,57 @@ def publish(today: str, md: str, count: int):
         print("  ⚠ 未找到当天 Issue，跳过评论（summaries 已存档）")
 
 
+def write_briefs(data: dict, env: dict):
+    """给表格里的全部论文补齐中文简介 + 星级（批量调用），然后重写 README / Issue 正文。
+
+    放在精读之前：即使后面精读失败，表格也已经是中文的。
+    简介按 arXiv 编号缓存在 briefs.json，已有简介的论文不重复生成。
+    """
+    import briefs as briefs_mod
+    import main as main_mod
+    papers = briefs_mod.all_papers(data)
+    existing = briefs_mod.load_briefs()
+    have = sum(1 for p in papers if p["arxiv_id"] in existing)
+    print(f"[简介] 表格共 {len(papers)} 篇，已有 {have} 篇，需新生成 {len(papers) - have} 篇"
+          f"（每 {briefs_mod.BATCH_SIZE} 篇一次调用）")
+    result = existing
+    if have < len(papers):
+        result = briefs_mod.generate_briefs(
+            papers, lambda prompt, max_tokens: chat(env, prompt, max_tokens), existing,
+            on_progress=briefs_mod.save_briefs)  # 每批成功即落盘，中途崩了也不丢已花的钱
+        briefs_mod.save_briefs(result)
+        missing = sum(1 for p in papers if p["arxiv_id"] not in result)
+        print(f"[简介] 新增 {len(result) - len(existing)} 篇"
+              + (f"，{missing} 篇没生成成功，下次运行自动补" if missing else "，表格全部覆盖"))
+    main_mod.render(data, result)  # 纯本地重写表格：不联网，不重新抓取
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--test", type=int, metavar="N", help="只分析前 N 篇（省额度）")
     parser.add_argument("--force", action="store_true", help="今天已分析过也重跑")
+    parser.add_argument("--briefs-only", action="store_true",
+                        help="只生成/更新中文简介并重写表格，不做全文精读")
     args = parser.parse_args()
 
     today = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
     out_path = os.path.join(SUMMARY_DIR, f"{today}.md")
-    if os.path.exists(out_path) and not args.force:
+    if os.path.exists(out_path) and not args.force and not args.briefs_only:
         print(f"✓ {today} 已分析过（{out_path}），如需重跑加 --force")
         return
 
     env = load_env()
     print(f"=== 本地论文智能体 {today} | 模型 {env['LLM_MODEL']} ===")
     data = heal_if_needed(pull_papers())
+    try:
+        write_briefs(data, env)
+    except Exception as e:
+        print(f"⚠ 中文简介生成失败，表格暂用英文摘要: {e}")
+    if args.briefs_only:
+        publish_briefs(today)
+        print("✅ 简介已更新（--briefs-only，未做全文精读）")
+        return
+    data = json.load(open("papers.json", encoding="utf-8"))  # 重读（heal 可能已更新）
     limit = args.test if args.test else (TRENDING_N + KEYWORD_N)
     papers = select_papers(data, limit)
     print(f"选定 {len(papers)} 篇：")

@@ -9,3 +9,5 @@ pdfs/
 *.pdf
 summaries/*.log
 agent_run.log
+# 每天重新生成的 Issue 正文（截断版）；被跟踪会让工作区永远是脏的，导致每天 git pull 失败
+.github/daily_issue_body.md
