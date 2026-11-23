@@ -12,29 +12,40 @@ import os
 import re
 
 BRIEFS_FILE = "briefs.json"
-BATCH_SIZE = 20  # 每次调用打包多少篇（实测 20 篇约 100 秒、输出 8K token）
+# 每次调用打包多少篇。20 篇时模型的思考会把输出预算占满导致截断（2026-11-23 实测 20 篇只出来 15 篇），
+# 降到 15 篇并配合 generate_briefs 里的输出预算
+BATCH_SIZE = 15
+# 筛选笔记的写法版本。改写下面的 PROMPT 时把它加 1，旧写法的笔记会被视为不存在并自动重新生成
+BRIEF_VERSION = 2
 
-PROMPT = """你是论文筛选助手。下面有 {n} 篇 arXiv 论文的标题和摘要。请为每一篇写中文简介。
+PROMPT = """你是我的论文筛选助手。我每天要从几百篇 arXiv 论文里挑出值得读全文的，现在只有标题和摘要。请为下面 {n} 篇论文各写一条筛选笔记。
 
 我的研究方向：①翻译智能体（PPT/幻灯片、XML 等富结构文档的 LLM 翻译，文档级机器翻译评测）②生物智能体（药物发现、实验规划、自动化科研）③教学智能体（个性化辅导、智能教学）④LLM Agent 与工具调用。
 
-要求：
-- 每篇 2 到 3 句中文，80 到 120 字。用中文写，论文专有名词、模型名、数据集名保留英文。
-- 先说这篇论文解决什么问题、怎么做，再说主要结果。不要写空话。
-- 相关度：按我的研究方向打 1 到 5 星。5 星是直接做翻译智能体或文档级翻译，1 星是基本无关。没有关系的论文要敢于打 1 星。
-- 严格按下面的格式输出，每篇一个 JSON 对象，不要输出任何其他文字。
+每条笔记 80 到 130 个字，按这个顺序写：
+1. 这篇论文解决什么问题、怎么做。用大白话，不堆术语；方法名、模型名、数据集名保留英文。
+2. 作者声称的结果。摘要里有数字就带上数字。一律用"作者称""作者报告"引出，不要写成已经证实的事实。如果摘要声称了效果提升却没给任何数字，在后面写"摘要未给数字"；没有做效果声称的论文（比如发布数据集、介绍框架）不写这句。
+3. 一句判断：只看摘要，这篇最值得留意的地方。比如只有小规模评测、只有自动指标、是立场或综述文章、和我的方向关系不大但某个设计可以借鉴。没有值得特别指出的，这一句省略。
 
-{{"id": "论文编号", "summary": "中文简介", "stars": 星数}}
+硬性要求：
+- 只使用摘要里的信息，不要补充摘要没有的内容，也不要替作者下"效果好""显著提升"这类结论。
+- 相关度按我的研究方向打 1 到 5 星：5 星是论文本身就在做我的方向（翻译智能体、富结构文档翻译、文档级翻译及其评测、生物智能体、教学智能体）；4 星是不做这些方向，但它的方法或工具能直接用上；3 星是有间接借鉴；2 星是只是同属一个大领域；1 星是基本无关。没有关系的论文要敢于打 1 星。
+- 每句话都要有信息量，不写"具有重要意义""值得关注"这类空话。
+- 严格按下面的格式输出，每篇一个 JSON 对象，不要输出任何其他文字：
+
+{{"id": "论文编号", "summary": "筛选笔记", "stars": 星数}}
 
 论文列表：
 """
 
 
 def load_briefs() -> dict:
-    if os.path.exists(BRIEFS_FILE):
-        with open(BRIEFS_FILE, encoding="utf-8") as f:
-            return json.load(f)
-    return {}
+    """读取缓存，只保留当前写法版本的条目（PROMPT 改版后，旧条目会被重新生成）。"""
+    if not os.path.exists(BRIEFS_FILE):
+        return {}
+    with open(BRIEFS_FILE, encoding="utf-8") as f:
+        data = json.load(f)
+    return {k: v for k, v in data.items() if v.get("v") == BRIEF_VERSION}
 
 
 def save_briefs(briefs: dict):
@@ -62,7 +73,7 @@ def _parse_batch(text: str, ids: list) -> dict:
         except (TypeError, ValueError):
             stars = 1
         if key in wanted and summary:
-            out[key] = {"summary": summary, "stars": stars}
+            out[key] = {"v": BRIEF_VERSION, "summary": summary, "stars": stars}
     return out
 
 
@@ -88,11 +99,11 @@ def generate_briefs(papers: list, chat, existing: dict | None = None, on_progres
         batch = todo[start:start + BATCH_SIZE]
         lines = []
         for i, p in enumerate(batch, 1):
-            lines.append(f"[{i}] 标题: {p['title']}\n    摘要: {p['abstract'][:900]}")
+            lines.append(f"[{i}] 标题: {p['title']}\n    摘要: {p['abstract'][:2500]}")
         prompt = PROMPT.replace("{n}", str(len(batch))) + "\n".join(lines)
         done = min(start + len(batch), len(todo))
         try:
-            got = _parse_batch(chat(prompt, max_tokens=16000), [str(i) for i in range(1, len(batch) + 1)])
+            got = _parse_batch(chat(prompt, max_tokens=24000), [str(i) for i in range(1, len(batch) + 1)])
         except Exception as e:
             # 不写入缓存：这批论文下次运行会重新生成
             print(f"    ✗ 这一批简介失败（{done - len(batch) + 1}-{done}），下次补: {str(e)[:120]}", flush=True)

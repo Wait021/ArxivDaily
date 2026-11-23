@@ -2,7 +2,7 @@
 """本地论文分析智能体。
 
 流程：git pull 拿云端 papers.json → 选文 → 下载 PDF → pypdf 提取全文
-     → GLM-5.3（1M 上下文）整篇直读生成中文深度解读 → 每日跨论文综述
+     → GLM-5.3（1M 上下文）整篇直读生成中文深度解读 → 每日阅读指引
      → 三路分发：summaries/ 存档推送 GitHub + 评论当天 Issue + README 索引
 
 用法：
@@ -44,26 +44,67 @@ KEYWORD_N = 5
 # 全文最多喂给模型的字符数（英文约 0.25 token/字符，留足 1M 上下文余量）
 FULLTEXT_CHAR_LIMIT = 400_000
 
-DEEP_PROMPT = """我的研究背景：{profile}
+# 深度解读的写法借鉴了几份开源读论文技能的共识：先讲清再评价；逐条核查"主张—证据—结论"；
+# 严格区分论文写的和读者推断的；数字要带出处；只谈真实相关的价值；给可执行的建议而不是分数。
+DEEP_PROMPT = """你是一位资深的 LLM 与智能体方向研究者，审稿经验丰富。请替我批判性精读下面这篇论文的全文，写成一份笔记，让没读过这篇论文的人读完能判断三件事：它说了什么，靠不靠谱，对我有没有用。
 
-请通读下面这篇论文的全文（不是摘要，是完整正文），用中文输出一份深度解读：
+我的研究背景：{profile}
+读者是我：熟悉 LLM 和 Agent 的基础知识，但不了解这篇论文所在的子方向。
 
-## 🎯 研究动机与要解决的问题
-## 🔧 方法（技术路线、关键设计、为什么这样设计）
-## 📊 实验与结果（数据集、基线对比、主要数字）
-## ⚠️ 局限与开放问题
-## 💡 对我的研究的启发（结合我的研究背景，具体一点，比如能用到 PPT/XML 翻译智能体的哪些环节）
+## 动笔前先想清楚（这部分不要输出）
+1. 先读摘要、引言末尾的贡献列表和结论，列出作者的核心主张。
+2. 判断论文类型：方法、系统/数据集/基准、理论、实证、综述/观点，可以有主有次。不同类型的论文，合格的证据不一样。方法论文看基线和消融；基准论文看数据构成、指标是否合理、对比是否公平、有没有泄漏风险；理论论文看假设和证明；综述看覆盖范围和选材方式。
+3. 再读方法和实验，把每条主张对应到具体证据。论文没有主张过的东西，不要替它补。
 
-最后单独一行给出：**相关度：⭐⭐⭐⭐⭐（N 星，从我的研究背景出发打分）**
+## 输出格式（严格遵守，小节标题照抄）
+#### 概览
+先写"论文类型：…"。再用两三句话写清楚：这篇论文用什么办法解决什么问题；最过硬的一条证据是什么；你对它可靠程度的总体判断。
+
+#### 问题与思路
+- 要解决的问题，以及它为什么值得解决。
+- 之前的做法差在哪。只写论文自己对比的那几类，不要泛泛地说"传统方法"。
+- 核心直觉：这个想法为什么能成立。用一个具体例子走一遍：输入是什么，经过哪几步，输出是什么。
+
+#### 证据核查
+用一张表覆盖摘要和引言里的全部核心主张：
+| 作者的主张 | 论文给出的证据 | 支撑程度 | 最大缺口 |
+"论文给出的证据"一栏写明出处（第几节、表几、图几）、关键数字、对比对象和实验条件。
+"支撑程度"只用三档：站得住、部分成立、证据不足。
+核查时重点看这几件事：基线是不是当前最强的做法、有没有认真调过；有没有消融实验；有没有多次运行的方差或显著性信息；评测是谁做的、有没有报告评分者之间的一致性；数据有没有泄漏风险、和训练分布是不是太接近；结论有没有超出实验实际覆盖的范围。哪一项论文没报告，就写"未报告"，不要写成"没做"。
+
+#### 最脆弱的一环
+哪一个假设、实验设计或对比一旦不成立，主要结论就会跟着动摇。说明原因，再写一句：要检验它，最小的做法是什么。
+
+#### 边界
+分两组写：**作者承认的局限**、**我的质疑**。每条质疑写出来源位置、它对结论的影响、你有多大把握。只写会改变结论或使用方式的问题，不列通用缺点，也不为了显得严格而挑刺。没有实质质疑就直说。
+
+#### 对我的价值
+只写和我研究方向真实相关的内容。论文本身的发现，和你由此对我项目做的推断，分开写，后者标明"我的推断"。和我的方向关系不大时直说，最多给一条可迁移的思路，不要硬找联系。
+
+#### 结论
+三选一：值得精读、值得浏览、暂不必读。用一两句话说明理由。
+最后一行单独写相关度，格式固定为：相关度：⭐⭐⭐⭐⭐（按我的研究方向打 1 到 5 星，几星写几颗，不加别的文字，不要加粗）
+
+## 写作要求
+- 严格区分四种信息：论文明确写的、领域里已有的共识、你根据证据做出的推断、你的猜测。论文写的用"论文报告""作者称"；你的判断用"我判断""我推断"；没把握就写"不确定"。不要把推断写成事实。
+- 不夸大。小规模或单一设置下的结果不要写成"证明"，写"在该设置下显示"。
+- 数字必须逐字来自原文，并带上对比对象、数据集和条件。照抄原文的小数位，不要自己取整或省略小数；确实要取近似，就在数字前面加"约"。相对提升和绝对提升分清楚；你自己换算出来的数字要在后面用括号标明（换算）。原文抽取错乱、看不清的表格或公式不要猜，写"原文抽取不清，未能核对"。
+- 每句话都要有信息量。不写"值得注意的是""至关重要""具有重要意义"这类空话，不用"不是……而是……"的句式，不堆砌术语。
+- 不打小数分数。
+- 篇幅控制在 1500 到 3000 个汉字，表格里的内容不计。宁短勿滥。
 
 论文标题：{title}
+
 论文全文：
 {body}"""
 
 REVIEW_PROMPT = """我的研究背景：{profile}
 
-以下是今天 {n} 篇论文的深度解读。请写一篇 300 字左右的「今日趋势综述」：
-这批论文共同指向什么趋势？哪些与我研究背景强相关值得优先精读？有没有可以直接借鉴到 PPT/XML 翻译智能体的想法？
+下面是我今天精读的 {n} 篇论文的笔记。请写一份 350 字以内的阅读指引：
+1. 按对我的价值从高到低排序，每篇用一句话说明它排在这个位置的原因。
+2. 如果这几篇之间确实有共同点或相互印证，指出来；没有关联就直说，不要硬凑趋势。
+3. 最后写一条：如果今天只读一篇，读哪篇，为什么。如果有可以直接用到 PPT/XML 翻译智能体上的做法，指出来，并标明它是论文的结论还是你的推断。
+只依据下面的笔记，不要补充笔记里没有的信息。区分论文的结论和你的推断。
 
 {digests}"""
 
@@ -86,9 +127,15 @@ def load_env() -> dict:
     return env
 
 
-def chat(env: dict, prompt: str, max_tokens: int = 16000) -> str:
-    """GLM 调用。GLM-5.3 是推理模型，思考也耗 token，预算必须给足；
-    若 content 为空（思考吃光预算），自动加倍预算/关闭思考重试。"""
+def chat(env: dict, prompt: str, max_tokens: int = 32000) -> str:
+    """GLM 调用，返回完整的回答正文。
+
+    输出预算不够时接口有两种表现，都不能直接采用：正文被截断并返回 finish_reason == "length"
+    （2026-11-23 实测），或正文为空。返回里只有正文，看不到模型在正文之外花了多少 token；
+    usage 里的 reasoning_tokens 字段实测约等于输出总数减一、开关思考都一样，不能当思考量用。
+    处理顺序：预算翻倍重试，上限 64000；还不够就关闭思考再试（thinking 参数已实测可用，
+    代价是分析会浅一些，但总比半截强）。
+    """
 
     def _post(body: dict):
         req = urllib.request.Request(
@@ -97,37 +144,19 @@ def chat(env: dict, prompt: str, max_tokens: int = 16000) -> str:
             headers={"Content-Type": "application/json", "Authorization": "Bearer " + env["LLM_API_KEY"]})
         return json.loads(urllib.request.urlopen(req, timeout=600).read().decode("utf-8"))
 
-    base = {
+    body = {
         "model": env["LLM_MODEL"],
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": max_tokens,
     }
     last_err = None
-    for attempt in range(3):
+    for attempt in range(4):
         try:
-            r = _post(base)
-            msg = r["choices"][0]["message"]
-            content = (msg.get("content") or "").strip()
-            usage = r.get("usage", {})
-            if content:
-                print(f"    [tokens] 输入{usage.get('prompt_tokens','?')} 输出{usage.get('completion_tokens','?')}")
-                return content
-            # content 为空：思考耗尽预算 → 加倍预算重试
-            print(f"    ⚠ content 为空（completion={usage.get('completion_tokens')}），加倍预算重试 ...")
-            retry = dict(base, max_tokens=min(max_tokens * (attempt + 2), 64000))
-            if attempt >= 1:  # 第二次还空就尝试关闭思考（zhipu 扩展参数）
-                retry["thinking"] = {"type": "disabled"}
-            r = _post(retry)
-            content = (r["choices"][0]["message"].get("content") or "").strip()
-            if content:
-                u2 = r.get("usage", {})
-                print(f"    [tokens] 输入{u2.get('prompt_tokens','?')} 输出{u2.get('completion_tokens','?')}")
-                return content
-            last_err = "content 持续为空"
+            r = _post(body)
         except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="ignore")[:200]
-            last_err = f"HTTP {e.code}: {body}"
+            err_body = e.read().decode("utf-8", errors="ignore")[:200]
+            last_err = f"HTTP {e.code}: {err_body}"
             if e.code in (429, 500, 502, 503):
                 time.sleep(20 * (attempt + 1))
                 continue
@@ -135,6 +164,21 @@ def chat(env: dict, prompt: str, max_tokens: int = 16000) -> str:
         except Exception as e:
             last_err = e
             time.sleep(10)
+            continue
+        choice = r["choices"][0]
+        content = (choice["message"].get("content") or "").strip()
+        usage = r.get("usage", {})
+        if content and choice.get("finish_reason") != "length":
+            print(f"    [tokens] 输入{usage.get('prompt_tokens', '?')} 输出{usage.get('completion_tokens', '?')}")
+            return content
+        last_err = f"{'正文被截断' if content else '正文为空'}（预算 {body['max_tokens']}）"
+        print(f"    ⚠ {last_err}，重试 ...")
+        if body["max_tokens"] < 64000:
+            body = dict(body, max_tokens=min(body["max_tokens"] * 2, 64000))
+        elif body.get("thinking") is None:
+            body = dict(body, max_tokens=max_tokens, thinking={"type": "disabled"})  # 最后手段
+        else:
+            break
     raise RuntimeError(f"GLM 调用失败: {last_err}")
 
 
@@ -248,23 +292,71 @@ def extract_text(pdf_path: str) -> str:
 
 # ---------- 分析与输出 ----------
 
+_NUM_RE = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def ungrounded_numbers(notes: str, source: str) -> list:
+    """找出笔记里出现、但论文抽取文本里完全找不到的数字，用来发现模型编造的数字。
+
+    这是个很粗的核对：只能发现原文里根本不存在的数字，发现不了抄错一位、小数点错位、
+    把百分比读成分数这类错误。为了少误报，匹配前去掉原文里的空白和千分位逗号（PDF 抽取
+    会把数字拆行、把相邻的表格单元粘在一起），并且按不带边界的子串匹配。
+    年份和 13 以内的整数不查；标了"换算"或前面带"约"的是模型自己算的或取的近似，也不查。
+    """
+    flat = re.sub(r"[\s,]", "", source)
+    notes = re.sub(r"\d+(?:[.,]\d+)*%?\s*[（(][^（）()]*换算[^（）()]*[）)]", "", notes)
+    notes = re.sub(r"[~≈约]\s*\d+(?:[.,]\d+)*%?", "", notes)
+    seen, missing = set(), []
+    for tok in _NUM_RE.findall(notes):
+        bare = tok.replace(",", "")
+        if bare in seen:
+            continue
+        seen.add(bare)
+        try:
+            value = float(bare)
+        except ValueError:  # 形如 0.128.0 的版本号或 IP，不是普通数字
+            continue
+        if value < 13 and value.is_integer() or 1990 <= value <= 2099:
+            continue
+        if bare in flat:
+            continue
+        missing.append(tok)
+    return missing
+
+
 def analyze(paper: dict, env: dict) -> str:
     pdf = download_pdf(paper)
     print(f"    全文 {os.path.getsize(pdf) // 1024}KB，提取中 ...")
     body = extract_text(pdf)
     print(f"    正文 {len(body)} 字符，GLM 全文直读中（1M 上下文）...")
     out = chat(env, DEEP_PROMPT.format(profile=config.RESEARCH_PROFILE, title=paper["title"], body=body))
+    unchecked = ungrounded_numbers(out, body)
+    if len(unchecked) >= 3:
+        # 不拦下整篇：把对不上原文的数字列出来，让读者引用前自己核对
+        out = out.rstrip() + (
+            "\n\n> ⚠️ 数字核对：下面这些数字在论文的抽取文本里完全找不到，引用前请对照 PDF 核实："
+            + "、".join(unchecked))
+        print(f"    ⚠ 有 {len(unchecked)} 个数字在原文里没找到，已在笔记末尾标注")
     header = (f"### [{paper['title']}]({paper['link']})\n\n"
               f"`{paper['arxiv_id']}` · {paper.get('date', '')} · [PDF]({paper.get('pdf', '')})\n\n")
     return header + out + "\n"
 
 
 def synthesize(digests: list, env: dict) -> str:
-    joined = "\n\n---\n\n".join(
-        f"#### {d['title']}\n{d['analysis'][:1500]}" for d in digests)
-    print("  生成今日跨论文综述 ...")
-    return chat(env, REVIEW_PROMPT.format(profile=config.RESEARCH_PROFILE, n=len(digests), digests=joined),
-                max_tokens=8000)
+    # 只把每篇的「概览」和「结论」交给模型：判断和理由都在这两节里，比截取开头一段更完整
+    parts = []
+    for d in digests:
+        text = d["analysis"]
+        start = text.find("#### 概览")  # 跳过笔记开头的标题行
+        if start >= 0:
+            text = text[start:]
+        overview = text.split("#### 问题与思路")[0].strip()[:1200]
+        conclusion = text.split("#### 结论")[-1].strip() if "#### 结论" in text else ""
+        parts.append(f"**{d['title']}**\n{overview}\n…\n#### 结论\n{conclusion}")
+    print("  生成今日阅读指引 ...")
+    return chat(env, REVIEW_PROMPT.format(profile=config.RESEARCH_PROFILE, n=len(digests),
+                                          digests="\n\n---\n\n".join(parts)),
+                max_tokens=16000)
 
 
 # ---------- 三路分发 ----------
@@ -274,7 +366,7 @@ def prepare_issue_body(path: str = ".github/daily_issue.md") -> str:
 
     返回实际可用的 body 文件路径（未超长则用原文件）。
     """
-    LIMIT = 60000
+    LIMIT = 64000  # GitHub 上限是 65536 个字符（实测按字符数计，不是字节）
     body = open(path, encoding="utf-8").read()
     if len(body) <= LIMIT:
         return path
@@ -450,7 +542,7 @@ def main():
           f"> 本地智能体（{env['LLM_MODEL']}，1M 上下文全文直读）分析了 {len(digests)} 篇论文\n"]
     if len(digests) > 1:
         try:
-            md.append(f"## 🧭 今日趋势综述\n\n{synthesize(digests, env)}\n\n---\n")
+            md.append(f"## 🧭 今日阅读指引\n\n{synthesize(digests, env)}\n\n---\n")
         except Exception as e:
             print(f"⚠ 综述生成失败: {e}")
     for d in digests:

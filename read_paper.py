@@ -14,21 +14,9 @@ import re
 import sys
 
 import config
-from paper_agent import chat, load_env, net_get
+from paper_agent import DEEP_PROMPT, chat, load_env, net_get, ungrounded_numbers
 
-DEEP_PROMPT = """我的研究背景：{profile}
-
-请精读下面这篇论文的全文，用中文输出一份深度解读：
-## 🎯 研究动机与要解决的问题
-## 🔧 方法（技术路线、关键设计、为什么这样设计）
-## 📊 实验与结果（数据集、基线、主要结论）
-## ⚠️ 局限与开放问题
-## 💡 对我的研究的启发（结合我的研究背景，具体一点）
-
-论文标题：{title}
-
-论文内容：
-{body}"""
+# 精读用的提示词与每日自动精读是同一份（paper_agent.DEEP_PROMPT），保证两种方式读出来的笔记格式一致
 
 ASK_PROMPT = """基于下面这篇论文，回答我的问题。用中文，直接给答案，可引用论文细节。
 
@@ -90,7 +78,11 @@ def main():
     title, body = get_fulltext(arxiv_id)
     print(f"《{title}》 {len(body)} 字符\n大模型精读中（需要 1-3 分钟）...\n")
     print("=" * 60)
-    print(chat(env, DEEP_PROMPT.format(profile=config.RESEARCH_PROFILE, title=title, body=body)))
+    notes = chat(env, DEEP_PROMPT.format(profile=config.RESEARCH_PROFILE, title=title, body=body))
+    print(notes)
+    unchecked = ungrounded_numbers(notes, body)
+    if unchecked:
+        print(f"\n⚠️ 数字核对：这些数字在论文抽取文本里完全找不到，引用前请对照原文：{'、'.join(unchecked)}")
     print("=" * 60)
 
     while True:
