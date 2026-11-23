@@ -5,6 +5,8 @@
      → GLM-5.3（1M 上下文）整篇直读生成中文深度解读 → 每日阅读指引
      → 三路分发：summaries/ 存档推送 GitHub + 评论当天 Issue + README 索引
 
+选文：热门榜里点赞最高的 2 篇 + 6 篇 4 星以上、且最近 30 天没精读过的关键词论文（见 select_papers）。
+
 用法：
   python paper_agent.py              # 日常模式（8 篇）
   python paper_agent.py --test 1     # 测试模式：只分析 1 篇（省额度）
@@ -20,7 +22,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import config
@@ -38,9 +40,13 @@ PDF_DIR = os.path.join(PROJ, "pdfs")
 SUMMARY_DIR = os.path.join(PROJ, "summaries")
 GH = r"C:\Program Files\GitHub CLI\gh.exe" if os.path.exists(r"C:\Program Files\GitHub CLI\gh.exe") else "gh"
 
-# 每天分析的篇数：热门榜 3 + 关键词 5
-TRENDING_N = 3
-KEYWORD_N = 5
+# 每天分析的篇数：热门榜最多 2 篇 + 关键词论文 6 篇
+TRENDING_N = 2
+KEYWORD_N = 6
+STAR_MIN = 4              # 关键词论文要精读，星级不能低于这个数
+TRENDING_MIN_STARS = 3    # 热门榜里星级低于这个数的不精读：点赞高但和我的方向无关的论文，表格里有一行笔记就够了
+PER_KEYWORD_CAP = 2       # 第一轮每个关键词最多贡献几篇，让三条主线都有机会出现
+RE_READ_AFTER_DAYS = 30   # 多少天内精读过的论文不再读
 # 全文最多喂给模型的字符数（英文约 0.25 token/字符，留足 1M 上下文余量）
 FULLTEXT_CHAR_LIMIT = 400_000
 
@@ -232,28 +238,101 @@ def heal_if_needed(data: dict) -> dict:
     return healed
 
 
-def select_papers(data: dict, limit: int) -> list:
-    """热门榜前 TRENDING_N 篇 + 各关键词轮询取，凑够 limit 篇，去重。"""
-    picked, seen = [], set()
+def norm_id(arxiv_id: str) -> str:
+    """去掉版本号。arXiv 接口返回的编号有的带 v1、有的不带，比较时要统一。"""
+    return re.sub(r"v\d+$", "", arxiv_id)
 
-    def add(p):
-        if p["arxiv_id"] not in seen:
-            seen.add(p["arxiv_id"])
-            picked.append(p)
 
-    for p in data.get("trending", [])[:TRENDING_N]:
-        add(p)
-    kw_lists = [ps for ps in data.get("keywords", {}).values() if ps]
-    i = 0
-    while len(picked) < limit and kw_lists:
-        for kl in kw_lists:
-            if len(picked) >= limit:
-                break
-            if i < len(kl):
-                add(kl[i])
-        i += 1
-        if i >= max(len(kl) for kl in kw_lists):
+def recent_reads(today: str, include_today: bool = True) -> set:
+    """最近 RE_READ_AFTER_DAYS 天内精读过的论文编号（已去掉版本号）。
+
+    从 summaries/ 里按日期命名的文件中收集：每篇精读的标题行后面跟着反引号包住的论文编号。
+    同一篇论文会在日报列表里连续出现很多天。截至 2026-11-24，456 次精读只覆盖 113 篇不同论文，
+    有一篇被读了 55 次；不查历史，每天的精读额度大半会花在重读上。
+    include_today=False 时不看当天的文件（--force 重做今天的精读时用）。
+    """
+    try:
+        cutoff = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=RE_READ_AFTER_DAYS)).strftime("%Y-%m-%d")
+    except ValueError:
+        return set()
+    read = set()
+    if not os.path.isdir(SUMMARY_DIR):
+        return read
+    for name in os.listdir(SUMMARY_DIR):
+        if not name.endswith(".md") or not re.match(r"\d{4}-\d{2}-\d{2}", name):
+            continue
+        if not cutoff <= name[:10] <= today:
+            continue
+        if name[:10] == today and not include_today:
+            continue
+        try:
+            with open(os.path.join(SUMMARY_DIR, name), encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            continue
+        # 每篇精读的标题行形如：`编号` · 日期 · [PDF](…)。按这个结构认，不限定编号的写法
+        read.update(norm_id(m) for m in re.findall(r"`([^`\n]+)`\s*·\s*\d{4}-\d{2}-\d{2}", text))
+    return read
+
+
+def select_papers(data: dict, limit: int, today: str, include_today: bool = True) -> list:
+    """挑今天要精读的论文，最多 limit 篇。
+
+    1. 热门榜（已按点赞排序）里最多 TRENDING_N 篇，星级低于 TRENDING_MIN_STARS 的跳过。
+    2. 其余名额给关键词论文。全部关键词论文按星级从高到低排，同星按更新时间新的在前，
+       分四轮取，前一轮取不满才进下一轮：
+         星级不低于 STAR_MIN、每个关键词最多 PER_KEYWORD_CAP 篇 → 同样门槛、不限关键词
+         → 不设星级门槛、每个关键词最多 PER_KEYWORD_CAP 篇 → 不设任何限制。
+       每个关键词的上限是为了让三条主线都有机会出现，不会全落在同一个方向。
+    最近读过的论文在每一步都跳过。
+    """
+    import briefs as briefs_mod
+    briefs = briefs_mod.load_briefs()
+    skip = recent_reads(today, include_today)
+    picked = []
+
+    def add(p) -> bool:
+        key = norm_id(p["arxiv_id"])
+        if key in skip:
+            return False
+        skip.add(key)  # 同时防止同一轮里重复选到同一篇
+        picked.append(p)
+        return True
+
+    def stars_of(p) -> int:
+        return (briefs.get(p["arxiv_id"]) or {}).get("stars", 0)
+
+    for p in data.get("trending", []):
+        if len(picked) >= TRENDING_N:
             break
+        if stars_of(p) >= TRENDING_MIN_STARS:
+            add(p)
+
+    kw_of, ranked = {}, []
+    for kw, papers in data.get("keywords", {}).items():
+        for p in papers:
+            kw_of[norm_id(p["arxiv_id"])] = kw
+            ranked.append(p)
+    ranked.sort(key=lambda p: p.get("date", ""), reverse=True)
+    ranked.sort(key=lambda p: -stars_of(p))  # 稳定排序：同星保持"新的在前"
+
+    def take(cap: int | None, min_stars: int):
+        used = {}
+        for p in ranked:
+            if len(picked) >= limit:
+                return
+            if stars_of(p) < min_stars:
+                continue
+            kw = kw_of[norm_id(p["arxiv_id"])]
+            if cap and used.get(kw, 0) >= cap:
+                continue
+            if add(p):
+                used[kw] = used.get(kw, 0) + 1
+
+    take(PER_KEYWORD_CAP, STAR_MIN)
+    take(None, STAR_MIN)
+    take(PER_KEYWORD_CAP, 0)
+    take(None, 0)
     return picked[:limit]
 
 
@@ -520,17 +599,25 @@ def main():
     try:
         write_briefs(data, env)
     except Exception as e:
-        print(f"⚠ 中文简介生成失败，表格暂用英文摘要: {e}")
+        print(f"⚠ 筛选笔记生成失败，表格暂用英文摘要: {e}")
     if args.briefs_only:
         publish_briefs(today)
-        print("✅ 简介已更新（--briefs-only，未做全文精读）")
+        print("✅ 筛选笔记已更新（--briefs-only，未做全文精读）")
         return
     data = json.load(open("papers.json", encoding="utf-8"))  # 重读（heal 可能已更新）
     limit = args.test if args.test else (TRENDING_N + KEYWORD_N)
-    papers = select_papers(data, limit)
-    print(f"选定 {len(papers)} 篇：")
+    # --force 是要重做今天的精读，所以不看今天已有的记录；平时要看，免得同一天读两遍
+    papers = select_papers(data, limit, today, include_today=not args.force)
+    if not papers:
+        print("✓ 列表里的论文最近都精读过了，今天没有新的可读")
+        return
+    import briefs as briefs_mod
+    briefs = briefs_mod.load_briefs()
+    short = len(papers) < limit and not args.test
+    print(f"选定 {len(papers)} 篇" + ("（符合条件的只有这么多）" if short else "") + "：")
     for p in papers:
-        print(f"  - [{p.get('date', '')}] {p['title'][:60]}")
+        stars = (briefs.get(p["arxiv_id"]) or {}).get("stars", 0)
+        print(f"  - {'★' * stars if stars else '无星级'} [{p.get('date', '')}] {p['title'][:60]}")
 
     digests = []
     for i, p in enumerate(papers, 1):
