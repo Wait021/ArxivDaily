@@ -361,7 +361,7 @@ def synthesize(digests: list, env: dict) -> str:
     print("  生成今日阅读指引 ...")
     return chat(env, REVIEW_PROMPT.format(profile=config.RESEARCH_PROFILE, n=len(digests),
                                           digests="\n\n---\n\n".join(parts)),
-                max_tokens=16000)
+                max_tokens=32000)  # 3 篇时输出约 1 万 token，8 篇更长；预算给足，免得先被截断再重试
 
 
 # ---------- 三路分发 ----------
